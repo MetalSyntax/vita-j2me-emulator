@@ -1,0 +1,67 @@
+# macOS metadata (el disco es exFAT/red: macOS los genera todo el
+# tiempo). Redundante con el .gitignore raíz, pero se deja explícito
+# porque esta carpeta se maneja bastante independiente de esa raíz.
+._*
+.DS_Store
+
+# Build del bringup (Fase 2a) — regenerable con
+# vita/BUILDING_VITA.txt / toolkit/vitaj2me-toolkit (opción "Compilar").
+/vita/build/
+
+# Logs sueltos de debugging en consola real que a veces se bajan a mano
+# a la raíz del proyecto (el historial "de verdad" vive en toolkit/logs/,
+# ya gitignored aparte).
+/*.log
+*.log
+
+# Crash dumps sueltos (los "de verdad" viven en toolkit/dumps/,
+# ya gitignored aparte) y sus análisis generados por el toolkit.
+*.psp2dmp*
+*.analysis.txt
+
+# Objetos y binarios sueltos regenerables (OJO: _prebuilt/ SÍ se
+# commitea — las excepciones !/_prebuilt/** al final del archivo
+# quedan DESPUÉS de estas reglas, así que siguen ganando).
+*.o
+*.a
+*.so
+*.vpk
+*.velf
+*.self
+eboot.bin
+param.sfo
+
+# Python fuera de toolkit/ (dentro ya lo cubre toolkit/.gitignore).
+__pycache__/
+*.pyc
+
+# Editores / temporales.
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- Build de la JVM completa (Fase 2b), ver build-vita-cldc.sh ---
+# Los artefactos FINALES (las .a/.zip que consume vita/CMakeLists.txt)
+# viven en _prebuilt/ y SÍ se commitean: tardaron una sesión entera de
+# ingeniería (JDK8 parcheado, Docker i386 para romgen, wrappers clang,
+# ver Comments.md) y no son triviales de reproducir. Lo que se ignora
+# acá son los directorios de trabajo intermedios (.o/.a/.h temporales)
+# que cada build dentro de pspkvm/ vuelve a generar solo.
+pspkvm/javacall/configuration/phoneMEFeature/vita_arm/output/
+pspkvm/pcsl/output/
+pspkvm/cldc/build/javacall_vita_gcc/dist/
+pspkvm/cldc/build/javacall_vita_gcc/loopgen/
+pspkvm/cldc/build/javacall_vita_gcc/romgen/
+pspkvm/cldc/build/javacall_vita_gcc/target/
+pspkvm/cldc/build/javacall_vita_gcc/tools/
+pspkvm/cldc/classes/
+pspkvm/cldc/tmpclasses/
+pspkvm/cldc/classes.zip
+pspkvm/midp/build/javacall_vita/output/
+
+# _prebuilt/ SÍ se commitea: el .gitignore raíz ignora *.zip a secas
+# (pensado para no subir el juego Android por error), lo que también
+# taparía sin querer estos .zip -- se reincluyen a propósito.
+!/_prebuilt/**/*.zip
+!/_prebuilt/**/*.a

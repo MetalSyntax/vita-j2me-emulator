@@ -1,0 +1,12 @@
+# Config local (IP de tu Vita, rutas locales)
+config.json
+
+# Logs y crash dumps descargados de la consola
+/logs/*
+/dumps/*
+!/logs/.gitkeep
+!/dumps/.gitkeep
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Wrapper para lanzar el toolkit desde cualquier directorio.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$DIR/vitaj2me_toolkit.py" "$@"

@@ -1,0 +1,25 @@
+#
+# javacall_vita_gcc.gmk — Fase 2: clon de javacall_psp_gcc.gmk para Vita.
+# Cambio único: PCSL_CPU mips -> arm (Cortex-A9).
+# Los módulos (file/network/memory/print -> javacall) son idénticos:
+# la implementación real vive en javacall/implementation/vita_arm (Fase 3).
+#
+######################################################################
+#
+# To be included for javacall_vita_gcc platforms
+#
+######################################################################
+
+PCSL_OS=javacall
+PCSL_CPU=arm
+
+FILE_MODULE=javacall
+NETWORK_MODULE=javacall
+MEMORY_PORT_MODULE=javacall
+MEMORY_MODULE=heap
+PRINT_MODULE=javacall
+
+include $(PCSL_DIR)/makefiles/share/gcc.gmk
+
+# must be included after compiler definition
+include $(PCSL_DIR)/makefiles/share/javacall.gmk

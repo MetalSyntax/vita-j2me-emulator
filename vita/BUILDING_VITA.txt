@@ -1,0 +1,118 @@
+BUILDING_VITA.txt — compilar PSPKVM para PS Vita (Fase 2)
+==========================================================
+
+Fase 2a (COMPLETADA): frontend bringup sin JVM ni JDK.
+Fase 2b (PENDIENTE):  JVM completa (requiere Fase 3: javacall/implementation/vita_arm).
+
+Requisitos (Fase 2a)
+--------------------
+- vitasdk instalado (https://vitasdk.org), ej. ~/vitasdk
+- cmake >= 3.14, make
+- export VITASDK=~/vitasdk ; export PATH=$VITASDK/bin:$PATH
+
+  NOTA cmake 4.x: vitasdk trae vita.cmake antiguo. Pasar siempre
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 (ya incluido en build-vita-cldc.sh).
+
+Fase 2a: compilar el bringup
+----------------------------
+  cd vita-j2me-emulator
+  cmake -S vita -B vita/build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  cmake --build vita/build
+  # -> vita/build/vitaj2me-bringup.vpk (TITLEID VITAJ2ME0)
+
+Instalar el .vpk en la Vita (VitaShell/FTP), lanzarlo, pulsar START
+para salir. El log queda en ux0:data/vitaj2me/bringup.log:
+  - "Hola Mundo desde C nativo (Vita, ARMv7)"
+  - sceCtrl sampling OK, sceAudioOut open OK
+  - botones pulsados con su máscara hex
+
+Qué cambió respecto a PSP (mapeo PSPSDK -> vitasdk)
+--------------------------------------------------
+  psp/Makefile (psp-gcc, build.mak, EBOOT.PBP)
+      -> vita/CMakeLists.txt (arm-vita-eabi-gcc, vita.cmake, .vpk)
+  psp/pspkvm.c (PSP_MODULE_INFO, sceCtrl PSP, sceAudio PSP, pspgu)
+      -> vita/main.c (SceCtrl/SceAudioOut/SceDisplay de Vita)
+  includes -lpsp* -> SceDisplay_stub SceCtrl_stub SceAudio_stub
+      SceLibKernel_stub (cubre sceIo + sceKernel + processmgr;
+      NO existen SceIo_stub ni SceKernel_stub sueltos en vitasdk)
+
+Fase 2b: JVM completa (COMPLETADA 2026-09-03 — build funcional en macOS/arm64)
+--------------------------------------------------------------------------
+Resultado: 8 .a ARM en ../_prebuilt/lib (midp 6.3MB, cldc_vm 1MB,
+javacall 568K, 5x pcsl) + classes.zip (MIDP 2MB) + cldc_classes.zip.
+El VPK final (eboot 3.5MB) enlaza TODO con 0 indefinidos.
+
+Receta (./build-vita-cldc.sh la ejecuta; pasos Docker manuales):
+ 0. Requisitos: JDK 8 (javac -source 1.4), Docker Desktop, red una vez.
+ 1. Wrappers: build-tools/*.sh -> /tmp/vitaj2me/hostbin + preverify;
+    proguard.jar + xalan.jar + serializer.jar -> /tmp/vitaj2me.
+ 2. Copia sin espacios: rsync pspkvm/ -> /tmp/vitaj2me-real/pspkvm
+    (los makefiles de 2006 parten rutas con ' '; los artefactos .a/.zip
+    se reimportan a ../_prebuilt/lib al final).
+ 3. javacall/pcsl/cldc-target: compilación cruzada ARM con JDK8 + wrappers.
+    Parches fuente necesarios (en repo, todos documentados):
+    - ConstantPool.java: sun.misc.Sort/Compare -> java.util (solo host).
+    - UnixPlatform.java: makedep.objSuffix por propiedad (sufijo .obj).
+    - GlobalDefinitions_gcc.hpp: rama VITA (bkpt, sin SWI Linux),
+      rama __aarch64__ (brk, host Mac), DISTANCE/DERIVED via intptr_t.
+    - GlobalDefinitions.hpp: ArrayPointer cast via intptr_t.
+    - Interpreter_c.cpp: va_list vacío con memset (ARM EABI es struct).
+    - AsmStubs_arm.s NUEVO (marcador end_of_the_world, como el mips).
+    - AsmStubs_i386.s: .arch i486->i586 (gas moderno).
+    - Thread.hpp/ObjectHeap.hpp/Stream.hpp/LargeObject.hpp/ROM.hpp/
+      ExecutionStackDesc.hpp/FileDecoder.hpp/BufferedFile.hpp/
+      HotRoutines.incl.hpp/KniUncommon.cpp/ReflectNatives.cpp/kni.cpp/
+      OsMemory_linux.cpp: casts puntero<->int vía intptr_t/uintptr_t
+      (neutros en 32 bits, obligatorios en host de 64).
+    - JVM_linux.cpp: stub JVM_SetLogChannel (como win32) + _XOPEN_SOURCE
+      para ucontext.h en macOS.
+    - javacall_vita_gcc.cfg: UnixPlatform (backslash), os_family=linux
+      para host (pero host_os=cygwin para evitar -static de Apple ld),
+      GCC_PREFIX_arm con triplet, ROMIZING=false vía make + sin -DARM.
+    - midp: PATHSEP=: (era /), gcc.gmk triplet + -Xlinker, MIDP.gmk
+      -Wno-narrowing (ROMImage), GNUmakefile libmidp.a para vita,
+      ext subsystem.gmk vitasdk sin -G0, vita_arm.gmk -marm (ASM A32).
+    - Java: CldcMIDletLoader (sin isAssignableFrom), PushRegistryImpl/
+      ResourceHandler/PIM/ImageDataFactory/PiscesFont/NativeSurface/
+      JavaSurface (literales .class que javac-1.4 no resuelve).
+ 4. Docker i386 (ver build-tools/deb-setup.sh): romgen 32-bit nativo
+    genera OopMaps.cpp (+GenerateOopMaps) y ROMImage.cpp de MIDP
+    (-romize ... =HeapCapacity96M). Sin Docker no hay OopMaps (el VM
+    2006 asume punteros de 32 bits en el host).
+ 5. Fakes con fecha vieja para saltar regeneraciones:
+    cldc/.../romgen/app/romgen.exe + dist/bin/romgen (el binario Linux
+    no corre en Mac; solo se necesita su timestamp).
+ 6. MIDP Java con ProGuard-preverify (1201 clases) y Xalan-J para el
+    Configurator (xalan:key sobre RTFs) + legacyMergeSort para l10n.
+ 7. Frontend vita/main.c + support.c; link con vitasdk (ver CMakeLists).
+
+Deploy en consola (FTP a ux0:data/vitaj2me/):
+  classes.zip lib/ appdb/ <*.jar en games/> <*.ttf en fonts/>
+  (lib/ = 132 ficheros resources + internal/system.config;
+  jwc_properties.ini se autocrea; suitestore/RMS bajo el mismo raíz
+  porque dir.c devuelve "." y main.c hace chdir(ux0:data/vitaj2me)).
+
+Bloqueadores conocidos para Fase 2b (no son bugs, son trabajo Fase 3)
+----------------------------------------------------------------------
+  1. No existe javacall/implementation/vita_arm/ (44 ficheros .c en
+     psp_mips usando pspsdk: pspgu, pspaudiolib, psprtc, pspnet...).
+     Cada uno se porta en Fase 3 a SceGxm/SceAudioOut/SceRtc/SceNet.
+  2. El build completo phoneME exige JDK 1.4-1.6 (romgen/loopgen son
+     Java de 2006). En macOS/arm64 moderno: usar VM Linux x86_64 con
+     JDK6 para los pasos 1-4. El bringup 2a NO necesita JDK.
+  3. phoneME usa `make 3.80`-style paths en algunos .gmk; si falla con
+     gmake moderno, compilar esos hosts tools en la VM Linux.
+
+Fase 3 (COMPLETADA): javacall/implementation/vita_arm con input
+(sceCtrl), storage (ux0:/data/vitaj2me), audio (SceAudioOut),
+red (sceNet+getaddrinfo) y eventos por msgpipe. Ver port_progress.md.
+
+Fase 4 (COMPLETADA): gráficos vita2d en vita_arm/midp/lcd.c
+(textura 512x512 U5U6U5_RGB, 480x272 -> 2x exacto a 960x544,
+propiedad vita_filter=linear|nearest, fit_screen como en PSP,
+rotación 90 por CPU). Fuentes: ft_support.c con rutas
+ux0:data/vitaj2me/fonts/ — copiar allí por FTP los 13 *.ttf de
+pspkvm/psp/fontpkgs/1/ + pspkvm/psp/utility.sym. Imágenes PNG/JPEG:
+decode nativo en image.c (libpng/libjpeg); el VKB es Java-side y
+sale gratis con el flush. Enlace final pendiente de Fase 2b.

@@ -1,0 +1,14 @@
+######################################################################
+# jsr184/src/config/javacall/config.gmk
+#
+# Configuracion del modulo para las plataformas javacall (la del port
+# Vita es javacall_vita). El motor M3G de este port es por software y no
+# depende de javacall, asi que aqui no hay nada que seleccionar todavia;
+# el fichero existe para respetar la convencion de los demas modulos y
+# para alojar futuras opciones (por ejemplo, un backend GPU).
+######################################################################
+
+# Filtrado bilineal por defecto en Texture2D.FILTER_LINEAR.
+# (Poner a false ahorra ~4 lecturas de texel por fragmento si algun dia
+# hiciera falta; el motor respeta el filtro que pida el contenido.)
+JSR_184_BILINEAR = true

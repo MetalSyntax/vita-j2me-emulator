@@ -1,0 +1,122 @@
+######################################################################
+# jsr184/src/config/subsystem.gmk
+#
+# Modulo JSR-184 (Mobile 3D Graphics, M3G 1.0) para el port PS Vita.
+#
+# A diferencia del JSR-184 original de phoneME, este modulo NO usa el
+# motor Swerve de Superscape (no esta disponible en el arbol de PSPKVM):
+# trae su propio rasterizador por software en jsr184/src/engine, que
+# escribe directamente sobre el framebuffer RGB565 de MIDP. Ver
+# jsr184/README_VITA.txt para el porque y las limitaciones.
+#
+# El modulo es autocontenido: no requiere ningun cambio en
+# midp/build/common. Para activarlo hacen falta exactamente dos cosas:
+#   1) USE_JSR_184 = true   en midp/build/<plataforma>/Options.gmk
+#   2) JSR_184_DIR=<ruta a jsr184> en la linea de make de midp
+######################################################################
+
+SUBSYSTEMS += jsr184
+
+JSR_184_CONFIG_DIR = $(JSR_184_DIR)/src/config
+
+# Verify.gmk exige SWERVE_DIR cuando USE_JSR_184 = true (herencia del
+# motor original). Como aqui el motor vive dentro del propio modulo, se
+# apunta al mismo directorio para que la comprobacion pase.
+SWERVE_DIR ?= $(JSR_184_DIR)
+
+-include $(JSR_184_CONFIG_DIR)/$(TARGET_PLATFORM)/config.gmk
+
+EXTRA_CFLAGS += -DENABLE_JSR_184=1
+JPP_DEFS     += -DENABLE_JSR_184
+
+# Propiedades del sistema (microedition.m3g.version)
+SUBSYSTEM_CONFIGURATION_INPUT_FILES += \
+    $(JSR_184_CONFIG_DIR)/properties_jsr184.xml
+
+# Configuracion del romizer
+ROMGEN_INCLUDE_PATHS += $(JSR_184_DIR)/src/config
+ROMGEN_CFG_FILES     += jsr184_rom.cfg
+
+######################################################################
+# Clases Java
+######################################################################
+
+JSR_184_CLASSES_DIR = $(JSR_184_DIR)/src/core/classes/javax/microedition/m3g
+
+SUBSYSTEM_JSR_184_JAVA_FILES = \
+    $(JSR_184_CLASSES_DIR)/AnimationController.java \
+    $(JSR_184_CLASSES_DIR)/AnimationTrack.java \
+    $(JSR_184_CLASSES_DIR)/Appearance.java \
+    $(JSR_184_CLASSES_DIR)/Background.java \
+    $(JSR_184_CLASSES_DIR)/Camera.java \
+    $(JSR_184_CLASSES_DIR)/CompositingMode.java \
+    $(JSR_184_CLASSES_DIR)/Fog.java \
+    $(JSR_184_CLASSES_DIR)/Graphics3D.java \
+    $(JSR_184_CLASSES_DIR)/Group.java \
+    $(JSR_184_CLASSES_DIR)/Image2D.java \
+    $(JSR_184_CLASSES_DIR)/IndexBuffer.java \
+    $(JSR_184_CLASSES_DIR)/KeyframeSequence.java \
+    $(JSR_184_CLASSES_DIR)/Light.java \
+    $(JSR_184_CLASSES_DIR)/Loader.java \
+    $(JSR_184_CLASSES_DIR)/M3GNative.java \
+    $(JSR_184_CLASSES_DIR)/MathUtil.java \
+    $(JSR_184_CLASSES_DIR)/Material.java \
+    $(JSR_184_CLASSES_DIR)/Mesh.java \
+    $(JSR_184_CLASSES_DIR)/MorphingMesh.java \
+    $(JSR_184_CLASSES_DIR)/Node.java \
+    $(JSR_184_CLASSES_DIR)/Object3D.java \
+    $(JSR_184_CLASSES_DIR)/Picker.java \
+    $(JSR_184_CLASSES_DIR)/PolygonMode.java \
+    $(JSR_184_CLASSES_DIR)/RayIntersection.java \
+    $(JSR_184_CLASSES_DIR)/SkinnedMesh.java \
+    $(JSR_184_CLASSES_DIR)/Sprite3D.java \
+    $(JSR_184_CLASSES_DIR)/Texture2D.java \
+    $(JSR_184_CLASSES_DIR)/Transform.java \
+    $(JSR_184_CLASSES_DIR)/Transformable.java \
+    $(JSR_184_CLASSES_DIR)/TriangleStripArray.java \
+    $(JSR_184_CLASSES_DIR)/VertexArray.java \
+    $(JSR_184_CLASSES_DIR)/VertexBuffer.java \
+    $(JSR_184_CLASSES_DIR)/World.java
+
+######################################################################
+# Nativo: puente KNI + motor por software
+######################################################################
+
+vpath % $(JSR_184_DIR)/src/core/native
+vpath % $(JSR_184_DIR)/src/engine
+
+SUBSYSTEM_JSR_184_EXTRA_INCLUDES = \
+    -I$(JSR_184_DIR)/src/engine \
+    -I$(MIDP_DIR)/src/core/jarutil/include \
+    -I$(MIDP_DIR)/src/lowlevelui/graphics/gx_putpixel/include
+
+SUBSYSTEM_JSR_184_NATIVE_FILES = \
+    m3g_kni.c \
+    m3g_math.c \
+    m3g_target.c \
+    m3g_texture.c \
+    m3g_raster.c \
+    m3g_pipeline.c
+
+######################################################################
+# Enganche con el build global
+#
+# midp/build/common/makefiles/SubsystemDefs.gmk no trae bloque para
+# JSR 184 (upstream daba por hecho el motor Swerve externo), asi que el
+# modulo se anade a las listas globales por su cuenta.
+######################################################################
+
+$(MIDP_CLASSES_ZIP):: $(SUBSYSTEM_JSR_184_JAVA_FILES)
+	$(appendjavafiles)
+
+JTWI_NATIVE_FILES += $(SUBSYSTEM_JSR_184_NATIVE_FILES)
+EXTRA_INCLUDES    += $(SUBSYSTEM_JSR_184_EXTRA_INCLUDES)
+
+# Bundle de fuentes
+source_bundle:: jsr_184_source_bundle
+
+JSR_184_SOURCE_OUTPUT_DIR = $(SOURCE_OUTPUT_DIR)/jsr184
+
+jsr_184_source_bundle: JSR_184_DIR SOURCE_OUTPUT_DIR
+	@echo " ... JSR 184 source bundle" $(LOG)
+	@$(call re_src_filter,$(JSR_184_DIR),$(JSR_184_SOURCE_OUTPUT_DIR),src)

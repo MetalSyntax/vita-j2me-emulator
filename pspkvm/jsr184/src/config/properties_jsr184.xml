@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE configuration SYSTEM "configuration.dtd">
+<!-- Propiedades del sistema exigidas por JSR-184 (M3G 1.0). -->
+<configuration>
+<properties>
+<!-- SYSTEM PROPERTIES -->
+<!-- Visibles desde System.getProperty() -->
+  <property Key="microedition.m3g.version"
+      Value="1.0"
+      Scope="system"
+      Comment="Version de la Mobile 3D Graphics API implementada"/>
+<!-- INTERNAL PROPERTIES -->
+<!-- Visibles desde Configuration.getProperty() -->
+  <property Key="com.sun.j2me.m3g.renderer"
+      Value="software"
+      Scope="internal"
+      Comment="Backend de render: rasterizador por software sobre el framebuffer RGB565 de MIDP"/>
+</properties>
+</configuration>
