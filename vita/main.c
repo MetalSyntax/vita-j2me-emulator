@@ -570,11 +570,29 @@ static void sanitize_games_dir(void) {
 }
 
 /* Busca UN .jad/.jar pendiente de instalar en games/.
- * Devuelve 1 y rellena out_name (solo fichero) si hay; 0 si toca AMS.
+ * Escribe en `list` un nombre de fichero por línea y devuelve cuántos.
  * Reglas: .jad manda sobre su .jar hermano; instalado = tamaño igual en
  * .mark + appdb con suites; 3 intentos sin suites = imposible (se avisa
  * y se deja pasar al AMS). */
-static int pending_install_pick(char *out_name, size_t out_sz) {
+/* ¿games/<name> ya está instalado? Se mira la URL de su suite en
+ * _suites.dat (no basta con "hay suites": un lote cortado a medias
+ * dejaría juegos sin instalar dados por instalados). */
+static vj_game g_suites[256];
+static int g_nsuites = -1;
+
+static int jar_installed(const char *name) {
+    char tail[300];
+    int i, tl;
+    if (g_nsuites < 0) g_nsuites = launcher_list(g_suites, 256);
+    tl = snprintf(tail, sizeof(tail), "/games/%s", name);
+    for (i = 0; i < g_nsuites; i++) {
+        int jl = (int)strlen(g_suites[i].jar);
+        if (jl >= tl && !strcmp(g_suites[i].jar + jl - tl, tail)) return 1;
+    }
+    return 0;
+}
+
+static int pending_install_pick(FILE *list) {
     static const char *GDIR = VITA_HOME "/games";
     static const char *ADIR = VITA_HOME "/appdb";
     SceUID dfd;
@@ -629,10 +647,12 @@ static int pending_install_pick(char *out_name, size_t out_sz) {
             /* Diseño anterior (sin -D, bug #22): reintentar de oficio. */
             log_line("  games/%s: mark v%d obsoleto — se reintenta",
                      ent.d_name, mver);
-        } else if (msize == sz && have_suites) {
+        } else if (msize == sz &&
+                   (is_jad ? have_suites : jar_installed(ent.d_name))) {
+            /* instalado (un .jad apunta a otro JAR: regla de siempre) */
             memset(&ent, 0, sizeof(ent));
-            continue; /* instalado */
-        } else if (msize == sz && !have_suites && attempts >= 3) {
+            continue;
+        } else if (msize == sz && attempts >= 3) {
             log_line("  games/%s: 3 intentos sin instalar — se omite "
                      "(borra su .mark en appdb/ para reintentar)",
                      ent.d_name);
@@ -644,14 +664,13 @@ static int pending_install_pick(char *out_name, size_t out_sz) {
         {
             int now = (mver >= MARK_VERSION && msize == sz) ? attempts + 1
                                                             : 1;
-            snprintf(out_name, out_sz, "%s", ent.d_name);
+            fprintf(list, "%s\n", ent.d_name);
             write_mark(mark, sz, now);
             log_line("  games/%s: pendiente (%lld bytes, intento %d)",
                      ent.d_name, sz, now);
         }
-        found = 1;
+        found++;
         memset(&ent, 0, sizeof(ent));
-        break; /* uno por arranque */
     }
     sceIoDclose(dfd);
     return found;
@@ -746,23 +765,20 @@ void vj_log(const char *fmt, ...) {
 
 static void relaunch(const char *a1, const char *a2);
 
-/* MODO INSTALADOR: el único evento del proceso es el install silencioso
- * (CommandLineInstaller "I <url>"), con -D para matchProfile (bug #22).
- * Al terminar, la JVM sale sola: hay que reiniciar la app para jugar. */
-static void boot_installer_mode(const char *fname) {
+/* MODO INSTALADOR: el único evento del proceso es el install silencioso.
+ * Sesión 51: por LOTES. CommandLineInstaller "B <lista>" (parche Java)
+ * instala en esta misma VM todos los JAR/JAD de games/_vjbatch.txt, uno
+ * tras otro; antes era uno por proceso y la app se relanzaba entre cada
+ * juego. Con -D para matchProfile (bug #22). */
+#define BATCH_FILE VITA_HOME "/games/_vjbatch.txt"
+
+static void boot_installer_mode(int count) {
     static char installer[] = "com.sun.midp.scriptutil.CommandLineInstaller";
-    static char op_install[] = "I";
-    static char url[288];
+    static char op_batch[] = "B";
+    static char url[] = "file:///games/_vjbatch.txt";
     char *argv[10];
     int n = 0;
 
-    snprintf(url, sizeof(url), "file:///games/%s", fname);
-    if ((int)strlen(url) >= (int)sizeof(url) - 1) {
-        log_line("FATAL nombre demasiado largo: %s", fname);
-        sceKernelDelayThread(5 * 1000 * 1000);
-        sceKernelExitProcess(1);
-        return;
-    }
     argv[n++] = vita_arg_runmidlet;
     argv[n++] = vita_arg_D_profiles;
     argv[n++] = vita_arg_D_config;
@@ -771,24 +787,19 @@ static void boot_installer_mode(const char *fname) {
     argv[n++] = vita_arg_classes;
     argv[n++] = vita_arg_internal;
     argv[n++] = installer;
-    argv[n++] = op_install;
+    argv[n++] = op_batch;
     argv[n++] = url; /* 10/10, el maximo del evento */
-    log_line("MODO INSTALADOR: %s (pantalla nativa, se relanza al "
-             "terminar; detalle en jvm-%03d.log)", fname,
-             vitaj2me_session_id);
-    {
-        /* Sesión 46: la UI del instalador de PSPKVM (y sus avisos) no se
-         * presenta nunca; se ve "Instalando…" con el estilo de la app. */
-        char jar[320];
-        snprintf(jar, sizeof(jar), VITA_HOME "/games/%s", fname);
-        launcher_install_start(jar);
-    }
+    log_line("MODO INSTALADOR: %d juego(s) en un lote (pantalla nativa; "
+             "detalle en jvm-%03d.log)", count, vitaj2me_session_id);
+    /* Sesión 46: la UI del instalador de PSPKVM (y sus avisos) no se
+     * presenta nunca; se ve el progreso con el estilo de la app. */
+    launcher_install_start(count);
     vita_send_start(n, argv);
-    log_line("JavaTask() >> (instalador, unico evento del proceso)");
+    log_line("JavaTask() >> (instalador por lotes)");
     JavaTask();
-    /* un proceso = un START (bug #20): relanzar instala el siguiente
-     * pendiente o, si no queda ninguno, abre la biblioteca */
     log_line("<< instalador termino");
+    sceIoRemove(BATCH_FILE);
+    /* un proceso = un START (bug #20): la biblioteca necesita su VM */
     relaunch(NULL, NULL);
 }
 
@@ -876,8 +887,8 @@ static void back_to_library(void) {
 
 /* fallback: si no está, el primero instalado. */
 static int find_game(int suite_id, int fallback, vj_game *out) {
-    static vj_game list[64];
-    int i, n = launcher_list(list, 64);
+    static vj_game list[256];
+    int i, n = launcher_list(list, 256);
     for (i = 0; i < n; i++) {
         if (list[i].suite_id == suite_id) {
             *out = list[i];
@@ -1113,12 +1124,19 @@ int main(int argc, char *argv[]) {
     }
     /* Un arranque = UN evento START (bug #20): o instalador o AMS. */
     {
-        char pending[256];
+        FILE *list;
+        int count = 0;
         sanitize_games_dir();
-        if (pending_install_pick(pending, sizeof(pending))) {
-            boot_installer_mode(pending);
-            return 0; /* inalcanzable (exit dentro), por claridad */
+        list = fopen(BATCH_FILE, "w");
+        if (list) {
+            count = pending_install_pick(list);
+            fclose(list);
         }
+        if (count > 0) {
+            boot_installer_mode(count);
+            return 0; /* inalcanzable (relanza dentro), por claridad */
+        }
+        sceIoRemove(BATCH_FILE);
     }
     /* Relanzamientos de la propia app (ver relaunch()). */
     if (argc >= 3 && !strcmp(argv[1], "-play")) {

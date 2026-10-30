@@ -42,9 +42,9 @@ Interface languages: **English** (default), **Español**, **Português**.
    `appdb/` and `games/`.
 3. Copy your `.jar` games (and `.jad` files, if you have them) to
    `ux0:data/vitaj2me/games/`.
-4. Start VitaJ2ME. Each new game is installed on a native "Installing..."
-   screen. The app restarts by itself between installs and then opens the
-   library.
+4. Start VitaJ2ME. All new games are installed in one batch on a native
+   progress screen ("Installing games 3 / 26"), and then the library
+   opens.
 
 Unusual characters in file names (`'`, `&`, parentheses, spaces) are
 replaced with `_` before installing. The name shown in the library comes

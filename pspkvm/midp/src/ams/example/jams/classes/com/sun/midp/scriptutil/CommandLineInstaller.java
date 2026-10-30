@@ -89,6 +89,11 @@ public class CommandLineInstaller extends MIDlet implements InstallListener,
 
         // parse the arguments
         String arg0 = getAppProperty("arg-0");
+        if ("B".equals(arg0)) {
+            installBatch(getAppProperty("arg-1"));
+            notifyDestroyed();
+            return;
+        }
         if (arg0 == null || !"I".equals(arg0)) {
             showUsage();
             notifyDestroyed();
@@ -180,6 +185,70 @@ public class CommandLineInstaller extends MIDlet implements InstallListener,
      *
      * @return true if the user wants to continue, false to stop the install
      */
+    /**
+     * VitaJ2ME: instala en una sola ejecución de la VM todos los JAR/JAD
+     * listados (un nombre por línea, relativos a file:///games/) en el
+     * fichero listUrl. Un proceso solo admite un START (bug #20 del port):
+     * antes la app tenía que relanzarse entre juego y juego. Cada
+     * instalación va en su propio try: un JAR roto no corta el lote.
+     */
+    private void installBatch(String listUrl) {
+        String list = null;
+        int ok = 0, total = 0;
+        try {
+            java.io.InputStream in =
+                javax.microedition.io.Connector.openInputStream(listUrl);
+            java.io.ByteArrayOutputStream buf =
+                new java.io.ByteArrayOutputStream();
+            int b;
+            while ((b = in.read()) != -1) {
+                buf.write(b);
+            }
+            in.close();
+            list = new String(buf.toByteArray());
+        } catch (Throwable t) {
+            System.out.println("VITAJ2ME-BATCH: no se pudo leer " + listUrl +
+                               ": " + t);
+            return;
+        }
+        int start = 0;
+        while (start < list.length()) {
+            int end = list.indexOf('\n', start);
+            if (end < 0) {
+                end = list.length();
+            }
+            String name = list.substring(start, end).trim();
+            start = end + 1;
+            if (name.length() == 0) {
+                continue;
+            }
+            total++;
+            String url = "file:///games/" + name;
+            System.out.println("VITAJ2ME-BATCH: " + total + " " + url);
+            try {
+                Installer installer = (Installer) Class.forName(
+                    "com.sun.midp.installer.FileInstaller").newInstance();
+                int len = url.length();
+                int id;
+                if (".jad".equalsIgnoreCase(url.substring(len - 4, len))) {
+                    id = installer.installJad(url,
+                        Constants.INTERNAL_STORAGE_ID, false, false, this);
+                } else {
+                    id = installer.installJar(url, null,
+                        Constants.INTERNAL_STORAGE_ID, false, false, this);
+                }
+                ok++;
+                System.out.println("The suite was succesfully installed, ID: "
+                                   + id);
+            } catch (Throwable t) {
+                System.out.println("VITAJ2ME-BATCH: error en " + name + ": " +
+                                   t);
+            }
+        }
+        System.out.println("VITAJ2ME-BATCH: fin, " + ok + " de " + total +
+                           " instalados");
+    }
+
     public boolean warnUser(InstallState state) {
         return true;
     }

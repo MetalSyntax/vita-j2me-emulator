@@ -16,9 +16,9 @@ app. See `README.md` for the full guide.
 
 ## Highlights
 
-- Native game library with automatic install of the JARs in `games/`,
-  shown on its own "Installing..." screen. Nothing from the old PSPKVM
-  manager is ever shown.
+- Native game library. All the JARs in `games/` are installed in one
+  batch, with a progress screen. Nothing from the old PSPKVM manager is
+  ever shown.
 - VM preloading: the last played game is ready almost instantly.
 - Automatic screen size per game (manifest, file name or images), up to
   480x854, or a manual choice.

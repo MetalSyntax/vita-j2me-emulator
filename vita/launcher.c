@@ -39,7 +39,7 @@
 
 #define SCR_W 960
 #define SCR_H 544
-#define MAX_GAMES 64
+#define MAX_GAMES 256
 #define SUITES_DAT "ux0:data/vitaj2me/appdb/_suites.dat"
 #define VJ_HOME "ux0:data/vitaj2me"
 
@@ -83,7 +83,9 @@ static struct {
     volatile unsigned long midlet_frames;
     SceUInt64 t0;
     int frame;
-    int install;    /* pantalla de instalación en vez de carga */
+    int install;    /* pantalla de instalación: nº de juegos del lote */
+    int install_base;  /* suites instaladas antes del lote */
+    int install_done;
 } ld;
 
 /* ======================================================================
@@ -262,6 +264,17 @@ static int rd32(const unsigned char *p) {
 
 static int rd16(const unsigned char *p) {
     return p[0] | (p[1] << 8);
+}
+
+/* Suites instaladas según la cabecera de _suites.dat (u32 crc, i32 n). */
+static int suites_count(void) {
+    unsigned char h[8];
+    int n = 0;
+    FILE *f = fopen(SUITES_DAT, "rb");
+    if (!f) return 0;
+    if (fread(h, 1, 8, f) == 8) n = rd32(h + 4);
+    fclose(f);
+    return n < 0 ? 0 : n;
 }
 
 /* UTF-16LE (BMP) -> UTF-8 */
@@ -1587,9 +1600,27 @@ static void draw_loading(float fade) {
 
     /* estado real: hasta que el MIDlet empieza a pintar, arranque de
      * la VM; después, el juego ya corre y carga sus recursos */
-    status = ld.install ? L("Installing the game", "Instalando el juego",
-                            "Instalando o jogo")
-             : ld.midlet_frames ? L("Loading game resources",
+    if (ld.install) {
+        /* progreso real: suites nuevas en appdb/_suites.dat */
+        if (ld.frame % 30 == 0) {
+            /* 0 = no se pudo leer (la VM lo está reescribiendo): seguir */
+            int c = suites_count(), n = c - ld.install_base;
+            if (c > 0)
+                ld.install_done = n < 0 ? 0 : n > ld.install ? ld.install : n;
+        }
+        snprintf(buf, sizeof(buf), "%s  %d / %d",
+                 L("Installing games", "Instalando juegos", "Instalando jogos"),
+                 ld.install_done, ld.install);
+        status = buf;
+        {
+            float bw = 360, bx = cx - bw / 2, by = ty + tile + 148;
+            fill_rrect(bx, by, bw, 8, 4, with_alpha(C_TEXT_3, 90));
+            if (ld.install_done)
+                fill_rrect(bx, by, bw * ld.install_done / ld.install, 8, 4,
+                           C_GLOW);
+        }
+    } else
+    status = ld.midlet_frames ? L("Loading game resources",
                                     "Cargando recursos del juego",
                                     "Carregando recursos do jogo")
                                 : L("Starting the Java virtual machine",
@@ -1676,18 +1707,20 @@ void launcher_preload_hold(void) {
     vita_lcd_loading_hook = hold_hook;
 }
 
-/* Instalador (CommandLineInstaller de PSPKVM): la VM corre detrás de una
- * pantalla nativa y NINGUNO de sus frames (UI vieja, avisos) se ve. */
-void launcher_install_start(const char *jar) {
+/* Instalador por lotes (CommandLineInstaller "B"): la VM corre detrás de
+ * una pantalla nativa con el progreso y NINGUNO de sus frames (UI vieja,
+ * avisos) se ve. */
+void launcher_install_start(int total) {
     static vj_game g;
-    const char *base = strrchr(jar, '/');
     memset(&g, 0, sizeof(g));
-    snprintf(g.jar, sizeof(g.jar), "%s", jar);
-    fill_from_manifest(&g);
-    if (!g.name[0]) snprintf(g.name, sizeof(g.name), "%s", base ? base + 1 : jar);
+    snprintf(g.name, sizeof(g.name), "VitaJ2ME");
     snprintf(g.vendor, sizeof(g.vendor), "%s",
-             L("Installing…", "Instalando…", "Instalando…"));
-    ld.install = 1;
+             L("Adding your games to the library",
+               "Añadiendo tus juegos a la biblioteca",
+               "Adicionando seus jogos à biblioteca"));
+    ld.install = total;
+    ld.install_base = suites_count();
+    ld.install_done = 0;
     launcher_loading_start(&g);
     vita_lcd_loading_hook = hold_hook;
 }

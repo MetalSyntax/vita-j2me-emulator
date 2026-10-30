@@ -37,8 +37,9 @@ void launcher_loading_start(const vj_game *g);
 /* Menú del juego (L+R+START): 1 = salir a la biblioteca. */
 int launcher_game_menu(const vj_game *g);
 
-/* Instalación de games/<jar> con pantalla nativa (sin UI de PSPKVM). */
-void launcher_install_start(const char *jar);
+/* Instalación por lotes de `total` juegos con pantalla nativa y progreso
+ * (sin UI de PSPKVM). */
+void launcher_install_start(int total);
 
 /* Precarga: la VM corre detrás de la biblioteca sin presentar nada. */
 void launcher_preload_hold(void);
