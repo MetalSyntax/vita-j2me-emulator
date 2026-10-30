@@ -1641,15 +1641,23 @@ static int loading_thread(SceSize args, void *argp) {
 }
 
 /* Lo llama lcd.c (hilo de la JVM) en cada flush mientras carga. */
+/* Para el hilo de la pantalla de carga/instalación si sigue vivo. */
+static void loading_stop(void) {
+    if (ld.thread <= 0) return;
+    ld.stop = 1;
+    sceKernelWaitThreadEnd(ld.thread, NULL, NULL);
+    sceKernelDeleteThread(ld.thread);
+    ld.thread = 0;
+}
+
+/* has_content: 0 frame vacío, 1 con contenido, 2 vita2d se va (lcd.c). */
 static int loading_hook(int has_content) {
     int timeout = (sceKernelGetProcessTimeWide() - ld.t0) > LOADING_MAX_US;
     if (!has_content && !timeout) {
         ld.midlet_frames++;
         return 1;
     }
-    ld.stop = 1;
-    sceKernelWaitThreadEnd(ld.thread, NULL, NULL);
-    sceKernelDeleteThread(ld.thread);
+    loading_stop();
     vj_log("carga: %s tras %d s (%lu frames vacíos del MIDlet)",
            has_content ? "primer frame con contenido" : "tiempo agotado",
            (int)((sceKernelGetProcessTimeWide() - ld.t0) / 1000000),
@@ -1660,7 +1668,7 @@ static int loading_hook(int has_content) {
 /* Precarga: la VM arranca detrás de la biblioteca; ninguno de sus
  * frames se presenta hasta launcher_loading_start(). */
 static int hold_hook(int has_content) {
-    (void)has_content;
+    if (has_content == 2) loading_stop();  /* instalación: la VM termina */
     return 1;
 }
 

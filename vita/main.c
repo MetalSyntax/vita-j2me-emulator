@@ -109,9 +109,16 @@ static int hb_thread(SceSize args, void *argp) {
         unsigned int st = 0, wt = 0;
         int wid = 0;
 
-        sceKernelDelayThread(10 * 1000 * 1000);
+        /* El jvm log se vuelca por tiempo: cada 2 s, para que un crash no
+         * se lleve lo último (HW 057 perdió el final de la instalación). */
+        {
+            int k;
+            for (k = 0; k < 5; k++) {
+                sceKernelDelayThread(2 * 1000 * 1000);
+                vita_jvmlog_flush();
+            }
+        }
         ticks += 10;
-        vita_jvmlog_flush();  /* el jvm log se vuelca por tiempo: no dejarlo colgado */
         f = vita_flush_count;
         k = vita_key_count;
         memset(&ti, 0, sizeof(ti));

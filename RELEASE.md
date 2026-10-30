@@ -47,6 +47,8 @@ app. See `README.md` for the full guide.
   `Image.createImage("logo.png")`) looped forever on the loading screen.
 - Frame drops caused by games printing to the log.
 - WAV playback read the wrong memory.
+- Crash at the end of installing a game (the install screen kept drawing
+  while the VM shut the graphics down).
 - 127 MB Java heap that left the system with only 512 KB; it is now capped
   at 64 MB.
 

@@ -119,7 +119,9 @@ static int vita_loading_should_skip(int force_stop) {
     if (!force_stop && hook(vita_frame_has_content())) {
         return 1;  /* sigue la pantalla de carga: no presentar */
     }
-    if (force_stop) hook(1);
+    /* 2 = "vita2d se va": el frontend tiene que parar SU hilo de dibujo
+     * pase lo que pase (la pantalla de instalación no para con 1). */
+    if (force_stop) hook(2);
     vita_lcd_loading_hook = 0;
     return 0;
 }
@@ -362,12 +364,15 @@ javacall_result javacall_lcd_init(void) {
  * @retval JAVACALL_FAIL    fail
  */
 javacall_result javacall_lcd_finalize(void){
-    //if (scbuff) free(scbuff);
-    if (j2me_tex) {
-        vita2d_free_texture(j2me_tex);
-        j2me_tex = NULL;
-        vita2d_fini();
-    }
+    /* Crash HW 057: al terminar una instalación la VM se apagaba con
+     * vita2d_fini() mientras el hilo de la pantalla "Installing…" del
+     * frontend seguía dibujando -> data abort dentro de SceGxm. Ahora
+     * solo se para esa pantalla: ni vita2d ni la textura se destruyen.
+     * La app siempre se relanza (o sale) tras JavaTask, la textura es de
+     * tamaño fijo (VSCR_MAX) y así el resize (finalize + init) la
+     * reutiliza, y nada de esto toca la GPU mientras otro hilo (la
+     * biblioteca durante la precarga) está dibujando. */
+    vita_loading_should_skip(1);
     return JAVACALL_OK;
 }
 
@@ -383,7 +388,7 @@ javacall_pixel* javacall_lcd_get_screen(javacall_lcd_screen_type screenType,
                                         javacall_lcd_color_encoding_type* colorEncoding){
     (void)screenType;
     if (resized) {
-        vita_loading_should_skip(1);  /* vita2d_fini: parar la carga antes */
+        vita_loading_should_skip(1);  /* parar la pantalla de carga antes */
         javacall_lcd_finalize();
         javacall_lcd_init();
         resized = 0;
