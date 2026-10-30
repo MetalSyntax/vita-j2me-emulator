@@ -65,7 +65,7 @@ foreach(sym ${VITAJ2ME_VM_WRAPS})
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--wrap=${sym}")
 endforeach()
 
-add_executable(${PROJECT_NAME} main.c support.c vm_patches.c)
+add_executable(${PROJECT_NAME} main.c launcher.c support.c vm_patches.c)
 
 # vm_patches.c va en Thumb (el resto del frontend es -marm): los call
 # sites que redirige patch_vm_calls.py son `bl` Thumb dentro de CLDC, y
@@ -111,6 +111,10 @@ target_link_libraries(${PROJECT_NAME}
   SceGxm_stub
   SceCommonDialog_stub
   SceAppMgr_stub
+  ScePgf_stub
+  SceTouch_stub
+  SceRtc_stub
+  ScePower_stub
   SceLibKernel_stub
 )
 

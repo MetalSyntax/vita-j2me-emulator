@@ -25,6 +25,7 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/io/dirent.h>
+#include <psp2/appmgr.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,7 @@
 
 #include "javacall_logging.h"
 #include "javacall_events.h"
+#include "launcher.h"
 
 /* Entrypoints de libmidp.a (jams_port/javacall + javacall_common). */
 void JavaTask(void);
@@ -69,10 +71,29 @@ static void log_line(const char *fmt, ...);
  * "colgado" (contadores quietos) de "lento" (avanzan a 1 FPS), y mide
  * FPS reales sin depender del stdout del juego. Hilo aparte: sobrevive
  * aunque la JVM esté atascada; sceKernelExitProcess lo mata al salir. */
+extern volatile unsigned long vita_jvmlog_writes;
+extern volatile unsigned long vita_jvmlog_fails;
+extern volatile int vita_jvmlog_lasterr;
+int vita_event_cond_uid(void);
+void javanotify_key_event(int key, int type);
+#define VJ_KEY_DEBUG_TRACE (-22) /* JAVACALL_KEY_DEBUG_TRACE */
+#define VJ_KEYPRESSED 1
+
+/* Volcado automático (sesión 38): en HW 037 el Launch dejó el hilo de la
+ * JVM dormido en la cola de eventos (waitType 0x100 = cond) sin pintar
+ * nada. Eso es "ningún hilo Java ejecutable": deadlock o espera en Java.
+ * Tras 30 s así se inyecta JAVACALL_KEY_DEBUG_TRACE: checkForSystemSignal
+ * llama a pss() y la pila de TODOS los hilos Java va al jvm.log. Máximo 3
+ * por sesión; se rearma cuando vuelve a haber frames. */
+#define HB_IDLE_DUMP_SECS 30
+#define HB_MAX_DUMPS 3
+
 static int hb_thread(SceSize args, void *argp) {
     unsigned long last_flush = 0, last_keys = 0;
     unsigned long long last_clocks = 0;
     unsigned int ticks = 0;
+    unsigned int idle_secs = 0;
+    int dumps = 0, armed = 1;
     (void)args; (void)argp;
 
     for (;;) {
@@ -95,11 +116,34 @@ static int hb_thread(SceSize args, void *argp) {
             wid = (int)ti.waitId;
             clocks = (unsigned long long)ti.runClocks;
         }
-        log_line("HB +%us: flush=%lu (+%lu ~%lu FPS) keys=%lu (+%lu) "
-                 "main: st=%u wait=%u/%d clocks=%llu (+%llu)",
-                 ticks, f, f - last_flush, (f - last_flush) / 10,
-                 k, k - last_keys,
-                 st, wt, wid, clocks, clocks - last_clocks);
+        {
+            int in_queue = (wid != 0 && wid == vita_event_cond_uid());
+            log_line("HB +%us: flush=%lu (+%lu ~%lu FPS) keys=%lu (+%lu) "
+                     "main: st=%u wait=0x%x/0x%08x%s clocks=%llu (+%llu) "
+                     "jvmlog=%lu fail=%lu err=0x%08x",
+                     ticks, f, f - last_flush, (f - last_flush) / 10,
+                     k, k - last_keys,
+                     st, wt, (unsigned)wid,
+                     in_queue ? "(cola eventos)" : "",
+                     clocks, clocks - last_clocks,
+                     vita_jvmlog_writes, vita_jvmlog_fails,
+                     (unsigned)vita_jvmlog_lasterr);
+            if (f != last_flush) {
+                idle_secs = 0;
+                armed = 1;
+            } else if (in_queue && f > 1) {
+                idle_secs += 10;
+            }
+            if (armed && dumps < HB_MAX_DUMPS &&
+                idle_secs >= HB_IDLE_DUMP_SECS) {
+                log_line("HB: VM ocioso %us en la cola sin pintar -> "
+                         "volcado pss automatico #%d (ver jvm-%03d.log)",
+                         idle_secs, dumps + 1, vitaj2me_session_id);
+                javanotify_key_event(VJ_KEY_DEBUG_TRACE, VJ_KEYPRESSED);
+                dumps++;
+                armed = 0;
+            }
+        }
         last_flush = f;
         last_keys = k;
         last_clocks = clocks;
@@ -595,6 +639,40 @@ static void vita_send_start(int argc, char *argv[]) {
     javacall_event_send((unsigned char *)&e, sizeof(e));
 }
 
+/* Juego elegido en la biblioteca nativa: runMidlet <suiteId> <clase>.
+ * MIDletSuiteLoader crea la suite desde el suitestore y la arranca en
+ * el isolate PRINCIPAL (createMIDletSuite -> startSuite), sin
+ * MVMManager.launchSuite ni Isolate nuevo — el camino que en HW 037
+ * dejó la JVM dormida en "Launching MIDlet..." para siempre. */
+static void vita_start_game(const vj_game *g) {
+    static char suite[16];
+    static char cls[128];
+    char *argv[] = {
+        vita_arg_runmidlet,
+        vita_arg_D_profiles,
+        vita_arg_D_config,
+        vita_arg_D_encoding,
+        vita_arg_classpathext,
+        vita_arg_classes,
+        suite,
+        cls,
+    };
+    snprintf(suite, sizeof(suite), "%d", g->suite_id);
+    snprintf(cls, sizeof(cls), "%s", g->cls);
+    log_line("vita_start_game() -> suite %s '%s' (%s), directo sin AMS",
+             suite, g->name, cls);
+    vita_send_start((int)(sizeof(argv) / sizeof(argv[0])), argv);
+}
+
+void vj_log(const char *fmt, ...) {
+    char buf[480];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    log_line("%s", buf);
+}
+
 static void vita_start_ams(void) {
     /* AMS Manager con propiedades -D (los juegos las necesitan en
      * runtime igual que el instalador). */
@@ -775,7 +853,30 @@ int main(int argc, char *argv[]) {
             return 0; /* inalcanzable (exit dentro), por claridad */
         }
     }
-    log_line("MODO AMS (sin installs pendientes)...");
+    /* Biblioteca nativa (sesión 38): elige juego o gestor clásico. */
+    {
+        static vj_game game;
+        int choice = launcher_run(&game);
+        if (choice == LAUNCHER_EXIT) {
+            log_line("biblioteca: salir. sceKernelExitProcess(0)");
+            sceKernelExitProcess(0);
+            return 0;
+        }
+        if (choice == LAUNCHER_PLAY) {
+            log_line("MODO JUEGO DIRECTO (sin AMS)...");
+            vita_start_game(&game);
+            log_line("JavaTask() >> (toma el hilo principal)");
+            JavaTask();
+            log_line("<< JavaTask() retornó: el juego terminó");
+            /* Un proceso = un runMidlet (bug #20): para volver a la
+             * biblioteca se relanza la propia app. */
+            log_line("relanzando app0:eboot.bin -> biblioteca");
+            sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
+            sceKernelExitProcess(0);
+            return 0;
+        }
+    }
+    log_line("MODO AMS (gestor clásico)...");
     vita_start_ams();
     log_line("JavaTask() >> (toma el hilo principal)");
     JavaTask();

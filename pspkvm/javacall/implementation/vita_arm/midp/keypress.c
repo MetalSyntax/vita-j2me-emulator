@@ -316,7 +316,7 @@ javacall_result javacall_key_init() {
     done = 0;
 
     thid = sceKernelCreateThread("key_thread", KeyThread,
-				     0x40, 0x1000, 0, 0, 0);
+				     0x40, 0x4000, 0, 0, 0); /* 16 KB: snprintf+printf+sceIo (4 KB no daba margen) */
     if (thid >= 0) {
     	 sceKernelStartThread(thid, 0, 0);
     	 /* Fingerprint del fix #17: si el jvm.log trae esta línea, la

@@ -32,6 +32,15 @@ static int log_channel_startup = 0;
 static int log_channel_stdout = 0;
 static int log_channel_file = 0;
 
+/* Sesión 38: en jvm-036/037 el log deja de recibir líneas tras "ready
+ * to go" (ni setDeviceToRun ni VITAJ2ME-KEY) mientras el bringup sigue
+ * vivo. El HB del frontend imprime estos contadores: si fails sube, el
+ * sceIoOpen falla (y lasterr dice por qué); si writes no sube, nadie
+ * llama a javacall_print. */
+volatile unsigned long vita_jvmlog_writes = 0;
+volatile unsigned long vita_jvmlog_fails = 0;
+volatile int vita_jvmlog_lasterr = 0;
+
 static void log_to_file(const char *s) {
     char path[128];
     if (vitaj2me_session_id > 0) {
@@ -42,9 +51,13 @@ static void log_to_file(const char *s) {
     }
     SceUID fd = sceIoOpen(path,
         SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+    vita_jvmlog_writes++;
     if (fd >= 0) {
         sceIoWrite(fd, s, (SceSize)strlen(s));
         sceIoClose(fd);
+    } else {
+        vita_jvmlog_fails++;
+        vita_jvmlog_lasterr = (int)fd;
     }
 }
 
@@ -55,10 +68,11 @@ static void log_to_file(const char *s) {
 */
 void javacall_print(const char *s) {
 
+    /* Fichero PRIMERO: el jvm.log es la evidencia de triage y no debe
+     * depender de que el stdout de newlib vuelva. */
+    if (log_channel_startup || log_channel_file) log_to_file(s);
     if (log_channel_consle) printf("%s", s);       /* consola USB */
-    if (log_channel_startup) log_to_file(s);       /* overlay Fase 4 -> fichero */
-    if (log_channel_stdout) printf("%s", s);
-    if (log_channel_file) log_to_file(s);
+    if (log_channel_stdout && !log_channel_consle) printf("%s", s);
 
 }
 

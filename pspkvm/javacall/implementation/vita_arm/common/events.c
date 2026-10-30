@@ -30,6 +30,13 @@ static SceUID _vita_ev_mutex = 0;
 static SceUID _vita_ev_cond = 0;
 static int _vita_events_inited = 0;
 
+/* Para el watchdog del frontend: si el hilo de la JVM está WAITING con
+ * waitId == este UID, el VM está ocioso esperando un evento nativo
+ * (ningún hilo Java ejecutable) — no atascado en nativo. */
+int vita_event_cond_uid(void) {
+    return (int)_vita_ev_cond;
+}
+
 #define NEXT(i) (i >= (NUM_MBX - 1) ? 0 : i+1)
 static int _mbxid_recv,  _mbxid_send;
 
