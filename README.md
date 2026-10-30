@@ -130,8 +130,14 @@ Porting notes and the full bug history are in `port_progress.md`.
 
 ## Credits and licenses
 
-- **PSPKVM / phoneME Feature** (Sun Microsystems): GPLv2. The VM, MIDP,
-  the fonts in `fonts/` and the data files come from this distribution.
+VitaJ2ME is free software under the **GNU GPL v2** (see `LICENSE`), like
+the phoneME code it is based on.
+
+- **PSPKVM / phoneME Feature** (Sun Microsystems): GPLv2. The VM, MIDP and
+  the data files come from this distribution.
+- **Fonts** in `fonts/`: DejaVu (Bitstream Vera license) and the Firefly
+  fallback font (Arphic Public License), as shipped with PSPKVM. Their
+  licenses are in `pspkvm/psp/fontpkgs/1/`.
 - **TinySoundFont** (`tsf.h`, `tml.h`) by Bernhard Schelling: MIT.
 - **TimGM6mb.sf2** General MIDI bank by Tim Brechbill: GPLv2.
 - **libmpg123**: LGPL 2.1, as packaged by VitaSDK.
