@@ -786,63 +786,26 @@ static void game_menu_hook(void) {
 }
 
 /* ----------------------------------------------------------------------
- * Vigía del ROM (crash HW 045): al cambiar de stage en SoD el GC murió en
- * ROM::oops_do con la cabecera (klass) del PRIMER objeto de
- * _rom_data_block a 0. Ese bloque se copia una vez desde
- * _rom_data_block_src al arrancar y las cabeceras no cambian nunca: algo
- * lo pisa. Cada 20 ms se compara la primera palabra; si cambió, se
- * registra qué tramo inicial difiere y se restauran las palabras a 0
- * que en el original no lo eran (la corrupción vista), antes del
- * siguiente GC.
+ * Bug real #30 (crash HW 045 y 050: GC completo -> ROM::oops_do con
+ * klass 0 en el primer objeto de _rom_data_block).
+ * CLDC se compiló con ROMIZING=false -> UseROM es la constante 0 y
+ * ROM::initialize() NO copia _rom_data_block_src a _rom_data_block
+ * (`if (UseROM) { if (_rom_is_relaunchable) memcpy... }`). Pero libmidp
+ * enlaza una imagen ROM relanzable (_rom_data_block_size = 0x9db4) y el
+ * GC recorre ese bloque sin mirar UseROM: los GC jóvenes usan
+ * _rom_data_block_scanned_size y no llegan a los objetos, el GC completo
+ * (cambio de stage en SoD, arranque de Asphalt Nitro) recorre el bloque
+ * entero, todavía a ceros (BSS), y desreferencia klass = 0.
+ * Fix: hacer aquí, antes de JavaTask, la copia que la VM se salta.
  * ---------------------------------------------------------------------- */
 extern int _rom_data_block[];
 extern const int _rom_data_block_src[];
 extern const int _rom_data_block_size;
 
-static int rom_guard_thread(SceSize args, void *argp) {
-    int words = _rom_data_block_size / 4, events = 0, armed = 0;
-    (void)args; (void)argp;
-    for (;;) {
-        sceKernelDelayThread(20 * 1000);
-        /* El bloque está a 0 (BSS) hasta que la VM lo copia al arrancar
-         * (falso positivo en HW 046-048): se vigila desde esa copia. */
-        if (_rom_data_block[0] == _rom_data_block_src[0]) {
-            armed = 1;
-            continue;
-        }
-        if (!armed) continue;
-        {
-            int i, zeros = 0, diff = 0, first_ok = -1;
-            for (i = 0; i < words && i < 4096; i++) {
-                if (_rom_data_block[i] != _rom_data_block_src[i]) diff++;
-                if (first_ok < 0 && _rom_data_block[i] != 0) first_ok = i;
-            }
-            log_line("ROMGUARD #%d: _rom_data_block[0]=0x%08x (original "
-                     "0x%08x); primera palabra no nula en +%d, %d palabras "
-                     "distintas en las primeras %d; [1..3]=%08x %08x %08x",
-                     ++events, (unsigned)_rom_data_block[0],
-                     (unsigned)_rom_data_block_src[0], first_ok * 4, diff,
-                     i, (unsigned)_rom_data_block[1],
-                     (unsigned)_rom_data_block[2],
-                     (unsigned)_rom_data_block[3]);
-            for (i = 0; i < words && _rom_data_block[i] == 0; i++) {
-                if (_rom_data_block_src[i] != 0) {
-                    _rom_data_block[i] = _rom_data_block_src[i];
-                    zeros++;
-                }
-            }
-            if (_rom_data_block[0] != _rom_data_block_src[0])
-                _rom_data_block[0] = _rom_data_block_src[0];
-            log_line("ROMGUARD #%d: restauradas %d palabras", events, zeros);
-        }
-    }
-    return 0;
-}
-
-static void start_rom_guard(void) {
-    SceUID th = sceKernelCreateThread("vj_romguard", rom_guard_thread,
-                                      0x10000100, 0x2000, 0, 0, NULL);
-    if (th >= 0) sceKernelStartThread(th, 0, NULL);
+static void rom_data_init(void) {
+    memcpy(_rom_data_block, _rom_data_block_src, (size_t)_rom_data_block_size);
+    log_line("ROM: _rom_data_block inicializado (%d B); la VM no lo hace "
+             "con UseROM=0 (bug #30)", _rom_data_block_size);
 }
 
 /* Tras JavaTask: el juego terminó -> volver a la biblioteca. */
@@ -1075,7 +1038,7 @@ int main(int argc, char *argv[]) {
     /* Watchdog de sesión (petición explícita: mejores logs): late
      * cada 10 s con FPS y teclas aunque la JVM esté atascada. */
     start_watchdog();
-    start_rom_guard();
+    rom_data_init();
     /* Splash inmediato (bug #21): el bootstrap tarda segundos y el
      * instalador no pinta nada — pantalla negra = "no corre". Best
      * effort: si vita2d falla, se sigue igual (la JVM lo reintentará). */
