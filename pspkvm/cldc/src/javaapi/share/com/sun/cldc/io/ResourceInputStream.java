@@ -128,6 +128,34 @@ public class ResourceInputStream extends InputStream {
     }
     
     /**
+     * VitaJ2ME: compatibilidad con los teléfonos reales. Muchos juegos
+     * (Gameloft: Soul of Darkness, d.class) llaman
+     * Image.createImage("logo.png") SIN '/' inicial; phoneME lo resuelve
+     * relativo al paquete de Image ("javax/microedition/lcdui/logo.png"),
+     * que no existe, y el juego reintenta cada frame para siempre. Los
+     * móviles de la época lo buscaban en la raíz del JAR. Solo se intenta
+     * cuando el nombre cae dentro de un paquete del sistema (un juego no
+     * puede tener recursos ahí) y la búsqueda normal ya falló: se prueba
+     * quitando directorios por la izquierda ("microedition/lcdui/logo.png",
+     * "lcdui/logo.png", "logo.png") para respetar subcarpetas del juego.
+     */
+    private static Object openFromJarRoot(String fixedName) {
+        if (!(fixedName.startsWith("java/") || fixedName.startsWith("javax/")
+              || fixedName.startsWith("com/sun/"))) {
+            return null;
+        }
+        int i = fixedName.indexOf('/');
+        while (i >= 0 && i < fixedName.length() - 1) {
+            Object fd = open(fixedName.substring(i + 1));
+            if (fd != null) {
+                return fd;
+            }
+            i = fixedName.indexOf('/', i + 1);
+        }
+        return null;
+    }
+
+    /**
      * Construct a resource input stream for accessing objects in the jar file.
      *
      * @param name the name of the resource in classpath to access. The
@@ -136,7 +164,9 @@ public class ResourceInputStream extends InputStream {
      */
     public ResourceInputStream(String name) throws IOException {
         String fixedName = fixResourceName(name);
-        System.out.println("ResourceInputStream("+name+")");
+        /* VitaJ2ME (HW 041-043): el println de depuración de PSPKVM salía
+         * por JVMSPI_PrintRaw CARÁCTER A CARÁCTER (una escritura en la
+         * memory card por letra) en cada carga de recurso. Quitado. */
         if (bufferCache == null) {
             bufferCache = new Hashtable();
         }
@@ -152,6 +182,9 @@ public class ResourceInputStream extends InputStream {
         }
         
         fileDecoder = open(fixedName);
+        if (fileDecoder == null) {
+            fileDecoder = openFromJarRoot(fixedName);
+        }
         if (fileDecoder == null) {
             throw new IOException();
         }

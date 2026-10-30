@@ -758,9 +758,10 @@ int main(int argc, char *argv[]) {
     /* Canales de log de la JVM: sin esto javacall_printf no va a ningún
      * lado (bug ciego: sin jvm.log no hay triage posible). STDOUT para
      * consola USB + FILE para logs/jvm-NNN.log. */
-    javacall_logging_channel(JAVACALL_LOG_CHANNEL_CONSOLE |
-                             JAVACALL_LOG_CHANNEL_STDOUT |
-                             JAVACALL_LOG_CHANNEL_FILE);
+    /* Solo FICHERO (HW 043): CONSOLE/STDOUT hacían un printf por
+     * carácter (System.out llega letra a letra) hacia un tty que en una
+     * Vita retail nadie lee — syscalls puras en el hilo de la JVM. */
+    javacall_logging_channel(JAVACALL_LOG_CHANNEL_FILE);
     log_line("frontend nativo (Vita, ARMv7)");
     log_line("fb objetivo: %dx%d (x2 de PSP 480x272)", FB_W, FB_H);
 

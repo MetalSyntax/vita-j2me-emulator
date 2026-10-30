@@ -16,6 +16,7 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/threadmgr.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,40 +53,71 @@ volatile unsigned long long vita_jvmlog_io_us = 0;
 
 static SceUID log_fd = -1;
 
-static void log_to_file(const char *s) {
-    size_t n = strlen(s);
+/* HW 043: con el fd abierto una sola vez seguían ~68 sceIoWrite/s de ~1
+ * byte (io 600 ms de cada segundo): System.out de CLDC llega por
+ * JVMSPI_PrintRaw CARÁCTER A CARÁCTER. Buffer por línea: se escribe al
+ * ver '\n' o al llenarse. Mutex porque escriben la JVM y key_thread. */
+#define LOG_BUF_SIZE 1024
+static char log_buf[LOG_BUF_SIZE];
+static int log_buf_len = 0;
+static SceUID log_mutex = -1;
+
+static int log_open(void) {
+    char path[128];
+    if (log_fd >= 0) return 1;
+    if (vitaj2me_session_id > 0) {
+        snprintf(path, sizeof(path), "%s/jvm-%03d.log",
+                 VITA_JVM_LOG_DIR, vitaj2me_session_id);
+    } else {
+        snprintf(path, sizeof(path), "%s", VITA_JVM_LOG_LEGACY);
+    }
+    log_fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+    if (log_fd < 0) {
+        vita_jvmlog_fails++;
+        vita_jvmlog_lasterr = (int)log_fd;
+        log_fd = -1;
+        return 0;
+    }
+    return 1;
+}
+
+/* Con el mutex cogido. */
+static void log_flush_locked(void) {
     SceUInt64 t0;
+    if (log_buf_len == 0 || !log_open()) {
+        log_buf_len = 0;
+        return;
+    }
+    t0 = sceKernelGetProcessTimeWide();
+    /* sceIoWrite es una syscall sin buffer de usuario: lo escrito queda
+     * en la tarjeta aunque el proceso muera después (dumps). */
+    if (sceIoWrite(log_fd, log_buf, (SceSize)log_buf_len) < 0) {
+        vita_jvmlog_fails++;
+    } else {
+        vita_jvmlog_bytes += (unsigned long)log_buf_len;
+    }
+    vita_jvmlog_io_us += sceKernelGetProcessTimeWide() - t0;
+    log_buf_len = 0;
+}
+
+static void log_to_file(const char *s) {
+    size_t n = strlen(s), i;
     vita_jvmlog_writes++;
     if (n == 0) {
         vita_jvmlog_empty++;
         return;
     }
-    t0 = sceKernelGetProcessTimeWide();
-    if (log_fd < 0) {
-        char path[128];
-        if (vitaj2me_session_id > 0) {
-            snprintf(path, sizeof(path), "%s/jvm-%03d.log",
-                     VITA_JVM_LOG_DIR, vitaj2me_session_id);
-        } else {
-            snprintf(path, sizeof(path), "%s", VITA_JVM_LOG_LEGACY);
-        }
-        log_fd = sceIoOpen(path,
-            SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
-        if (log_fd < 0) {
-            vita_jvmlog_fails++;
-            vita_jvmlog_lasterr = (int)log_fd;
-            log_fd = -1;
-            return;
+    if (log_mutex < 0) {
+        log_mutex = sceKernelCreateMutex("VitaJ2meLog", 0, 0, NULL);
+    }
+    if (log_mutex >= 0) sceKernelLockMutex(log_mutex, 1, NULL);
+    for (i = 0; i < n; i++) {
+        log_buf[log_buf_len++] = s[i];
+        if (s[i] == '\n' || log_buf_len == LOG_BUF_SIZE) {
+            log_flush_locked();
         }
     }
-    /* sceIoWrite es una syscall sin buffer de usuario: lo escrito queda
-     * en la tarjeta aunque el proceso muera después (dumps). */
-    if (sceIoWrite(log_fd, s, (SceSize)n) < 0) {
-        vita_jvmlog_fails++;
-    } else {
-        vita_jvmlog_bytes += n;
-    }
-    vita_jvmlog_io_us += sceKernelGetProcessTimeWide() - t0;
+    if (log_mutex >= 0) sceKernelUnlockMutex(log_mutex, 1);
 }
 
 /**
