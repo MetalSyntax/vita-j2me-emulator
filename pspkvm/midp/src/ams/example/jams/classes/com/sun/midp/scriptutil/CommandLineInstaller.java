@@ -196,8 +196,13 @@ public class CommandLineInstaller extends MIDlet implements InstallListener,
         String list = null;
         int ok = 0, total = 0;
         try {
-            java.io.InputStream in =
-                javax.microedition.io.Connector.openInputStream(listUrl);
+            // La misma API con la que FileInstaller lee los JAR de
+            // file:///games/ (Connector "file" es JSR-75 y no está
+            // garantizado en este contexto: el lote no instalaba nada).
+            com.sun.midp.io.j2me.storage.RandomAccessStream ras =
+                new com.sun.midp.io.j2me.storage.RandomAccessStream();
+            ras.connect(listUrl, javax.microedition.io.Connector.READ);
+            java.io.InputStream in = ras.openInputStream();
             java.io.ByteArrayOutputStream buf =
                 new java.io.ByteArrayOutputStream();
             int b;
@@ -205,6 +210,7 @@ public class CommandLineInstaller extends MIDlet implements InstallListener,
                 buf.write(b);
             }
             in.close();
+            ras.close();
             list = new String(buf.toByteArray());
         } catch (Throwable t) {
             System.out.println("VITAJ2ME-BATCH: no se pudo leer " + listUrl +

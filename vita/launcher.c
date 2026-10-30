@@ -774,7 +774,12 @@ static void draw_card(const scene *sc, int i) {
         text_fit(x + 14, y + art + 54, 0.75f, C_CARD_TEXT2,
                  g->vendor[0] ? g->vendor : "Java ME", (int)w - 28);
         snprintf(meta, sizeof(meta), "%d KB", g->jar_size / 1024);
-        text(x + 14, y + h - 14, 0.68f, C_ACCENT, meta);
+        if (g->missing)
+            text_fit(x + 14, y + h - 14, 0.68f, C_SYM_CIR,
+                     L("JAR file missing", "Falta el archivo JAR",
+                       "Arquivo JAR ausente"), (int)w - 28);
+        else
+            text(x + 14, y + h - 14, 0.68f, C_ACCENT, meta);
     }
 }
 
@@ -1349,15 +1354,16 @@ static int settings_run(scene *sc, const vj_game *g, int mode, vj_cfg *out) {
 }
 
 /* Menú del juego: lo llama lcd.c desde el hilo de la VM (juego en pausa).
- * Devuelve 1 si hay que salir a la biblioteca. */
+ * Devuelve 0 seguir, 1 salir a la biblioteca, 2 reiniciar el juego (la
+ * resolución o el táctil solo se pueden fijar al arrancar la VM). */
 extern int suspend_key_input;
 extern volatile int vita_media_paused;
 
 int launcher_game_menu(const vj_game *g) {
     static scene sc;
-    vj_cfg c;
+    vj_cfg c, before;
     SceCtrlData pad;
-    int r;
+    int r, w0, h0, w1, h1;
     suspend_key_input = 1;
     vita_media_paused = 1;
     if (!font) font = vita2d_load_default_pgf();
@@ -1368,6 +1374,7 @@ int launcher_game_menu(const vj_game *g) {
     }
     vj_log("menú del juego abierto");
     vita2d_set_vblank_wait(1);
+    cfg_load(g, &before);
     r = settings_run(&sc, g, SET_INGAME, &c);
     /* no devolver el control con un botón aún pulsado (llegaría al juego) */
     do {
@@ -1383,8 +1390,19 @@ int launcher_game_menu(const vj_game *g) {
     cfg_apply(&c, 1);
     vita_media_paused = 0;
     suspend_key_input = 0;
-    vj_log("menú del juego cerrado (%s)", r == 2 ? "salir" : "seguir");
-    return r == 2;
+    if (r == 2) {
+        vj_log("menú del juego cerrado (salir)");
+        return 1;
+    }
+    cfg_screen(&before, &w0, &h0);
+    cfg_screen(&c, &w1, &h1);
+    if (w0 != w1 || h0 != h1 || before.touch != c.touch) {
+        vj_log("menú del juego: %dx%d -> %dx%d / táctil %d -> %d: "
+               "reiniciar el juego", w0, h0, w1, h1, before.touch, c.touch);
+        return 2;
+    }
+    vj_log("menú del juego cerrado (seguir)");
+    return 0;
 }
 
 /* ======================================================================
@@ -1401,7 +1419,13 @@ static float target_scroll(const scene *sc) {
 
 int launcher_list(vj_game *g, int max) {
     int i, n = load_suites(g, max);
-    for (i = 0; i < n; i++) fill_from_manifest(&g[i]);
+    for (i = 0; i < n; i++) {
+        FILE *f = fopen(g[i].jar, "rb");
+        g[i].missing = !f;
+        if (f) fclose(f);
+        else vj_log("launcher: '%s' sin JAR (%s)", g[i].name, g[i].jar);
+        fill_from_manifest(&g[i]);
+    }
     return n;
 }
 
@@ -1489,6 +1513,7 @@ int launcher_run(vj_game *out, int preselect) {
 
         if (act_back) { result = LAUNCHER_EXIT; break; }
         if (act_play && sc.sel < sc.n) {
+            if (sc.games[sc.sel].missing) continue;  /* sin JAR no arranca */
             if (!sc.games[sc.sel].cls[0]) {
                 vj_log("launcher: '%s' sin clase de MIDlet, no se puede "
                        "lanzar", sc.games[sc.sel].name);

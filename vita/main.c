@@ -476,7 +476,9 @@ static int appdb_has_suites(void) {
  * Los marks v1/v0 (sin versión, del diseño anterior sin -D) se tratan
  * como frescos: el intento anterior falló sí o sí por el bug #22, así
  * que hay que reintentar sin pedirle al usuario que borre nada. */
-#define MARK_VERSION 2
+/* v3 (sesión 52): los lotes de la sesión 51 fallaban enteros y dejaban
+ * los juegos con 3 intentos; subir la versión los vuelve a intentar. */
+#define MARK_VERSION 3
 
 /* Lee un .mark. Devuelve intentos, tamaño por *msize (-1 si no hay) y
  * versión por *mver (0 si formato viejo). */
@@ -528,6 +530,8 @@ static void write_mark(const char *mark, long long sz, int attempts) {
  * de los packs) rompen la URL file:///games/<nombre> del instalador de
  * MIDP. Se renombran a [A-Za-z0-9._-] antes de instalar; el nombre que se
  * ve en la biblioteca sale del manifiesto, no del fichero. */
+static int jar_installed(const char *name);
+
 static void sanitize_games_dir(void) {
     static const char *GDIR = VITA_HOME "/games";
     SceUID dfd = sceIoDopen(GDIR);
@@ -538,7 +542,10 @@ static void sanitize_games_dir(void) {
         char clean[256], from[320], to[320];
         const char *src = ent.d_name;
         int i, o = 0, dirty = 0;
-        if (has_suffix_ci(src, ".jar") || has_suffix_ci(src, ".jad")) {
+        /* HW 066: una suite instalada apunta a su JAR por NOMBRE (el
+         * instalador no lo copia); renombrarlo la deja "corrupta". */
+        if ((has_suffix_ci(src, ".jar") || has_suffix_ci(src, ".jad")) &&
+            !jar_installed(src)) {
             for (i = 0; src[i] && o < (int)sizeof(clean) - 1; i++) {
                 char ch = src[i];
                 if (!strncmp(src + i, "&amp;", 5)) {  /* entidad HTML */
@@ -643,15 +650,16 @@ static int pending_install_pick(FILE *list) {
                  ent.d_name);
         attempts = read_mark(mark, &msize, &mver);
 
-        if (mver < MARK_VERSION) {
+        if (is_jad ? (msize == sz && have_suites)
+                   : (jar_installed(ent.d_name) &&
+                      (msize == sz || mver < MARK_VERSION))) {
+            /* ya en la biblioteca (un .jad apunta a otro JAR: regla vieja) */
+            memset(&ent, 0, sizeof(ent));
+            continue;
+        } else if (mver < MARK_VERSION) {
             /* Diseño anterior (sin -D, bug #22): reintentar de oficio. */
             log_line("  games/%s: mark v%d obsoleto — se reintenta",
                      ent.d_name, mver);
-        } else if (msize == sz &&
-                   (is_jad ? have_suites : jar_installed(ent.d_name))) {
-            /* instalado (un .jad apunta a otro JAR: regla de siempre) */
-            memset(&ent, 0, sizeof(ent));
-            continue;
         } else if (msize == sz && attempts >= 3) {
             log_line("  games/%s: 3 intentos sin instalar — se omite "
                      "(borra su .mark en appdb/ para reintentar)",
@@ -797,7 +805,23 @@ static void boot_installer_mode(int count) {
     vita_send_start(n, argv);
     log_line("JavaTask() >> (instalador por lotes)");
     JavaTask();
-    log_line("<< instalador termino");
+    g_nsuites = -1;  /* releer _suites.dat */
+    {
+        int i, ok = 0;
+        FILE *f = fopen(BATCH_FILE, "r");
+        char name[256];
+        while (f && fgets(name, sizeof(name), f)) {
+            name[strcspn(name, "\r\n")] = 0;
+            if (!name[0]) continue;
+            i = jar_installed(name);
+            ok += i;
+            if (!i) log_line("  NO instalado: %s (ver jvm-%03d.log, "
+                             "VITAJ2ME-BATCH)", name, vitaj2me_session_id);
+        }
+        if (f) fclose(f);
+        log_line("<< instalador termino: %d de %d en la biblioteca", ok,
+                 count);
+    }
     sceIoRemove(BATCH_FILE);
     /* un proceso = un START (bug #20): la biblioteca necesita su VM */
     relaunch(NULL, NULL);
@@ -850,9 +874,12 @@ static void exit_hook(void) {
 
 /* L+R+START en juego (hilo de la VM, dentro del flush de lcd.c). */
 static void game_menu_hook(void) {
-    if (launcher_game_menu(&cur_game)) {
+    int r = launcher_game_menu(&cur_game);
+    if (r == 1) {
         log_line("menú: salir del juego a la biblioteca");
         relaunch(NULL, NULL);
+    } else if (r == 2) {
+        relaunch_play(cur_game.suite_id);  /* aplica resolución/táctil */
     }
 }
 
@@ -889,15 +916,18 @@ static void back_to_library(void) {
 static int find_game(int suite_id, int fallback, vj_game *out) {
     static vj_game list[256];
     int i, n = launcher_list(list, 256);
+    /* un juego sin su JAR no se puede arrancar (HW 066) */
     for (i = 0; i < n; i++) {
-        if (list[i].suite_id == suite_id) {
+        if (list[i].suite_id == suite_id && !list[i].missing) {
             *out = list[i];
             return 1;
         }
     }
-    if (n > 0 && fallback) {
-        *out = list[0];
-        return 1;
+    for (i = 0; fallback && i < n; i++) {
+        if (!list[i].missing) {
+            *out = list[i];
+            return 1;
+        }
     }
     return 0;
 }
@@ -966,7 +996,7 @@ static void library_with_preload(void) {
     SceUID th;
     int fd;
     if (!find_game(cfg_last_suite(), 1, &pre_game) || !pre_game.cls[0]) {
-        /* nada instalado: biblioteca vacía (solo explica y sale) */
+        /* ningún juego arrancable (nada instalado o sin JAR): biblioteca sin precarga */
         static vj_game g;
         if (launcher_run(&g, -1) == LAUNCHER_PLAY) relaunch_play(g.suite_id);
         sceKernelExitProcess(0);

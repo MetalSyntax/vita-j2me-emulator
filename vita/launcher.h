@@ -16,6 +16,7 @@ typedef struct {
     char icon[128];      /* entrada PNG dentro del JAR, sin '/' inicial */
     int jar_size;
     int midlets;
+    int missing;         /* el JAR de la suite ya no está en su sitio */
 } vj_game;
 
 enum {
@@ -34,7 +35,8 @@ int launcher_list(vj_game *g, int max);
  * contenido. */
 void launcher_loading_start(const vj_game *g);
 
-/* Menú del juego (L+R+START): 1 = salir a la biblioteca. */
+/* Menú del juego (L+R+START): 1 = salir a la biblioteca, 2 = reiniciar
+ * el juego (cambió la resolución o el táctil). */
 int launcher_game_menu(const vj_game *g);
 
 /* Instalación por lotes de `total` juegos con pantalla nativa y progreso
