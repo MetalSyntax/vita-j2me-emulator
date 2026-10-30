@@ -26,6 +26,7 @@
 #include <psp2/kernel/threadmgr.h>
 
 extern int suspend_key_input;
+extern int vita_keymap_custom_n; /* keymap.c */
 static int key_thread_id = -1;
 static int done = 0;
 
@@ -224,8 +225,9 @@ static int KeyThread(SceSize args, void *argp)
 
 		    keymap = javacall_keymap_current();
 		    keys = javacall_keymap_size();
-		    shift = vitaKey & (SHIFT_KEY1 | SHIFT_KEY2);
-		    lastShift = lastVitaKey & (SHIFT_KEY1 | SHIFT_KEY2);
+		    /* Con mapeo propio del juego no hay capa de shift. */
+		    shift = vita_keymap_custom_n ? 0 : vitaKey & (SHIFT_KEY1 | SHIFT_KEY2);
+		    lastShift = vita_keymap_custom_n ? 0 : lastVitaKey & (SHIFT_KEY1 | SHIFT_KEY2);
 		    rotate = javacall_devemu_get_rotation(javacall_devemu_get_current_device());
 
 		    for (i = 0 ; i < keys; i++) {

@@ -25,12 +25,24 @@ enum {
 };
 
 /* Requiere vita2d ya inicializado (javacall_lcd_init). Bloquea hasta que
- * el usuario elige; deja en pantalla un frame "Iniciando…". */
-int launcher_run(vj_game *out);
+ * el usuario elige; empieza con el juego `preselect` (suiteId) marcado. */
+int launcher_run(vj_game *out, int preselect);
 
-/* Tras LAUNCHER_PLAY y justo antes de JavaTask(): pantalla de carga
- * animada en su propio hilo hasta que el MIDlet pinta contenido. */
-void launcher_loading_start(void);
+/* Juegos instalados (sin iconos). */
+int launcher_list(vj_game *g, int max);
+
+/* Pantalla de carga animada en su propio hilo hasta que el MIDlet pinta
+ * contenido. */
+void launcher_loading_start(const vj_game *g);
+
+/* Precarga: la VM corre detrás de la biblioteca sin presentar nada. */
+void launcher_preload_hold(void);
+
+/* Resolución de pantalla deducida del JAR (1 = encontrada). */
+int jar_detect_screen(const char *jar, int *w, int *h);
+
+/* Primitiva compartida con el teclado virtual (gamecfg.c). */
+void fill_rrect(float x, float y, float w, float h, float r, unsigned int c);
 
 /* Lo implementa main.c (escribe en bringup-NNN.log). */
 void vj_log(const char *fmt, ...);

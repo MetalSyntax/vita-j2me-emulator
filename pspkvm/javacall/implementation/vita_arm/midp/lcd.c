@@ -1,11 +1,11 @@
 /* vita_arm/midp/lcd.c — Fase 4: port PSP -> Vita (vita2d).
  *
  * Origen: psp_mips/midp/lcd.c (GU textured-quad + swizzle + VRAM directa).
- * Arquitectura conservada: J2ME dibuja en scbuff RGB565 (hasta 512x512,
+ * Arquitectura conservada: J2ME dibuja en scbuff RGB565 (hasta 640x640,
  * vscr_w/h dinámicos); el flush lo presenta en pantalla.
  * Cambios:
  *  - pspgu/pspge/pspdisplay + swizzle_fast + advancedBlit + vram 0x04000000
- *    -> vita2d: textura 512x512 U5U6U5_BGR (cero conversiones: el 565 va
+ *    -> vita2d: textura 640x640 U5U6U5_BGR (cero conversiones: el 565 va
  *    directo a GPU) + draw_texture_part_scale con los mismos 3 modos PSP
  *    (centrado 1:1, aspect-fit, stretch) + rotación 90.
  *  - Resolución: Vita 960x544 = 2x exacto de 480x272. Un juego clásico
@@ -36,6 +36,10 @@ extern "C" {
 #define VITA_SCR_W 960
 #define VITA_SCR_H 544
 
+/* Pantalla virtual máxima: 640 cubre los juegos táctiles de Nokia
+ * (640x360 / 360x640); el offscreen y la textura van a ese tamaño. */
+#define VSCR_MAX 640
+
 extern const unsigned short DukeTango[];
 
 static int vscr_w = 480;
@@ -43,7 +47,7 @@ static int vscr_h = 272;
 
 static int resized = 0;
 
-static unsigned short int __attribute__((aligned(16))) _offscreen[512*512];
+static unsigned short int __attribute__((aligned(16))) _offscreen[VSCR_MAX*VSCR_MAX];
 static javacall_pixel* scbuff = (javacall_pixel*)_offscreen;
 
 static int _enable_lcd_flush = 1;
@@ -67,6 +71,27 @@ volatile unsigned long vita_flush_count = 0;
  * con él terminado) y desde ahí manda la JVM. hook(1) también se usa
  * para pararla antes de cualquier reinicio de vita2d (resize). */
 int (*vita_lcd_loading_hook)(int has_content) = 0;
+
+/* Ajustes de pantalla por juego (los fija vita/settings.c antes de
+ * JavaTask). scale: 0 = política PSP de siempre, 1 ajustar con
+ * proporción, 2 escalado entero, 3 estirar, 4 tamaño original.
+ * area: zona de 960x544 donde va el juego (el resto es del teclado
+ * virtual). filter: -1 = propiedad vita_filter, 0 nítido, 1 suave. */
+int vita_lcd_scale = 0;
+int vita_lcd_area[4] = {0, 0, VITA_SCR_W, VITA_SCR_H};
+int vita_lcd_filter = -1;
+/* Rectángulo real del último frame (el táctil lo invierte). */
+volatile float vita_lcd_dest[4] = {0, 0, VITA_SCR_W, VITA_SCR_H};
+/* Dibuja encima del juego (teclado virtual) dentro del mismo frame. */
+void (*vita_lcd_overlay_hook)(void) = 0;
+
+/* Antes de JavaTask: el MIDlet ve esta pantalla desde el primer
+ * getWidth(). Sin javanotify_rotation (aún no hay VM). */
+void vita_lcd_set_virtual_size(int w, int h) {
+    if (w < 16 || h < 16) return;
+    vscr_w = w > VSCR_MAX ? VSCR_MAX : w;
+    vscr_h = h > VSCR_MAX ? VSCR_MAX : h;
+}
 
 /* ¿El frame tiene algo distinto de un color liso? Muestreo 16x16. */
 static int vita_frame_has_content(void) {
@@ -112,11 +137,11 @@ static void vita_upload_rows_ex(const javacall_pixel *src, int pitch,
                                 int width, int ystart, int yend) {
     unsigned char *dst = (unsigned char *)vita2d_texture_get_datap(j2me_tex);
     unsigned int stride = vita2d_texture_get_stride(j2me_tex);
-    unsigned int row_bytes = (stride < 512u * 2u) ? stride * 2u : stride;
+    unsigned int row_bytes = (stride < VSCR_MAX * 2u) ? stride * 2u : stride;
     int y;
     if (ystart < 0) ystart = 0;
-    if (yend > 512) yend = 512;
-    if (width > 512) width = 512;
+    if (yend > VSCR_MAX) yend = VSCR_MAX;
+    if (width > VSCR_MAX) width = VSCR_MAX;
     for (y = ystart; y < yend; y++) {
         memcpy(dst + (unsigned int)y * row_bytes,
                src + (unsigned int)y * (unsigned int)pitch,
@@ -131,14 +156,14 @@ static void vita_upload_rows_ex(const javacall_pixel *src, int pitch,
 
 static void vita_upload_rows(int ystart, int yend) {
     /* NOTA: Java dibuja con pitch = vscr_w (ver path VRAM original),
-     * no 512 aunque el offscreen sea 512x512. */
+     * no VSCR_MAX aunque el offscreen sea cuadrado. */
     if (yend > vscr_h) yend = vscr_h;
     vita_upload_rows_ex(scbuff, vscr_w, vscr_w, ystart, yend);
 }
 
 /* Buffer para rotación 90° por CPU (el modo rotado es raro; predecible
  * y sin depender de la semántica del hotspot de vita2d). */
-static unsigned short int __attribute__((aligned(16))) _rotbuf[512*512];
+static unsigned short int __attribute__((aligned(16))) _rotbuf[VSCR_MAX*VSCR_MAX];
 
 /* Rota scbuff (vscr_w x vscr_h, pitch vscr_w) 90° horario
  * a _rotbuf (vscr_h x vscr_w). */
@@ -146,7 +171,7 @@ static void vita_rotate_cw90(void) {
     int dx, dy;
     for (dy = 0; dy < vscr_w; dy++) {
         for (dx = 0; dx < vscr_h; dx++) {
-            _rotbuf[(unsigned int)dy * 512u + (unsigned int)dx] =
+            _rotbuf[(unsigned int)dy * VSCR_MAX + (unsigned int)dx] =
                 ((unsigned short*)scbuff)[(unsigned int)(vscr_h - 1 - dx) *
                                           (unsigned int)vscr_w + (unsigned int)dy];
         }
@@ -158,6 +183,26 @@ static void vita_rotate_cw90(void) {
  * si no aspect-fit, si no stretch. */
 static void vita_dest_rect(int scr_w, int scr_h,
                            float *dx, float *dy, float *dw, float *dh) {
+    if (vita_lcd_scale > 0) {
+        float ax = vita_lcd_area[0], ay = vita_lcd_area[1];
+        float aw = vita_lcd_area[2], ah = vita_lcd_area[3];
+        float sx = aw / scr_w, sy = ah / scr_h;
+        float s = sx < sy ? sx : sy;
+        if (vita_lcd_scale == 2) {
+            s = (float)(int)s;
+            if (s < 1.0f) s = sx < sy ? sx : sy; /* no cabe ni a 1x */
+        } else if (vita_lcd_scale == 4) {
+            s = 1.0f;
+        }
+        if (vita_lcd_scale == 3) {
+            *dw = aw; *dh = ah;
+        } else {
+            *dw = scr_w * s; *dh = scr_h * s;
+        }
+        *dx = ax + (aw - *dw) / 2.0f;
+        *dy = ay + (ah - *dh) / 2.0f;
+        return;
+    }
     {
         if (scr_w <= VITA_SCR_W && scr_h <= VITA_SCR_H && !fit_scr) {
             /* 480x272 -> x2 entero exacto a pantalla completa. */
@@ -237,7 +282,7 @@ javacall_result javacall_lcd_init(void) {
             * con _RGB el skin azul de 2006 salía naranja (captura
             * 2026-09-26) y todos los juegos con R<->B cambiados. */
            j2me_tex = vita2d_create_empty_texture_format(
-               512, 512, SCE_GXM_TEXTURE_FORMAT_U5U6U5_BGR);
+               VSCR_MAX, VSCR_MAX, SCE_GXM_TEXTURE_FORMAT_U5U6U5_BGR);
            if (!j2me_tex) {
                return JAVACALL_FAIL;
            }
@@ -258,6 +303,7 @@ javacall_result javacall_lcd_init(void) {
                    linear = 1;
                }
            }
+           if (vita_lcd_filter >= 0) linear = vita_lcd_filter;
            if (linear != tex_linear) {
                tex_linear = linear;
                vita_apply_filter();
@@ -378,7 +424,7 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
     } else if (rot == 90) {
         /* Rotación por CPU (modo raro): se sube todo el frame. */
         vita_rotate_cw90();
-        vita_upload_rows_ex((javacall_pixel*)_rotbuf, 512, vscr_h, 0, vscr_w);
+        vita_upload_rows_ex((javacall_pixel*)_rotbuf, VSCR_MAX, vscr_h, 0, vscr_w);
         draw_w = vscr_h; draw_h = vscr_w;
     } else {
         vita_upload_rows(ystart, yend);
@@ -386,6 +432,8 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
     }
 
     vita_dest_rect(draw_w, draw_h, &dx, &dy, &dw, &dh);
+    vita_lcd_dest[0] = dx; vita_lcd_dest[1] = dy;
+    vita_lcd_dest[2] = dw; vita_lcd_dest[3] = dh;
 
     {
         static int flush_count = 0;
@@ -401,6 +449,7 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
     vita2d_draw_texture_part_scale(j2me_tex,
         dx, dy, 0.0f, 0.0f, (float)draw_w, (float)draw_h,
         dw / (float)draw_w, dh / (float)draw_h);
+    if (vita_lcd_overlay_hook) vita_lcd_overlay_hook();
     vita2d_end_drawing();
     vita2d_swap_buffers();
     vita_flush_count++;
@@ -467,8 +516,8 @@ void javacall_set_new_screen_size(int w, int h) {
         javacall_printf("javacall_set_new_screen_size: ignorado (<=0)\n");
         return;
     }
-    if (w > 512) w = 512;
-    if (h > 512) h = 512;
+    if (w > VSCR_MAX) w = VSCR_MAX;
+    if (h > VSCR_MAX) h = VSCR_MAX;
     vscr_w = w;
     vscr_h = h;
     resized = 1;

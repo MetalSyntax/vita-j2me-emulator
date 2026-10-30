@@ -18,6 +18,7 @@
  * Triángulo detalles, START gestor clásico, Círculo salir.
  */
 #include "launcher.h"
+#include "gamecfg.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/touch.h>
@@ -33,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define SCR_W 960
 #define SCR_H 544
@@ -61,6 +63,7 @@
 #define C_SYM_X      RGBA8(0x8C, 0xB4, 0xFF, 0xFF)
 #define C_SYM_TRI    RGBA8(0x44, 0xD6, 0xA8, 0xFF)
 #define C_SYM_CIR    RGBA8(0xFF, 0x70, 0x82, 0xFF)
+#define C_SYM_SQ     RGBA8(0xF2, 0x8F, 0xD9, 0xFF)
 
 #define CARD_W 200
 #define CARD_H 252
@@ -101,8 +104,8 @@ static unsigned int with_alpha(unsigned int c, int a) {
 
 /* Rectángulo redondeado OPACO (los círculos de esquina se solapan con
  * los rects; con alfa se notarían las juntas). */
-static void fill_rrect(float x, float y, float w, float h, float r,
-                       unsigned int c) {
+void fill_rrect(float x, float y, float w, float h, float r,
+                unsigned int c) {
     if (r * 2 > w) r = w / 2;
     if (r * 2 > h) r = h / 2;
     vita2d_draw_rectangle(x + r, y, w - 2 * r, h, c);
@@ -195,13 +198,20 @@ static void glyph_circle(float cx, float cy, float s) {
     ring(cx, cy, s * 1.05f, 3, C_SYM_CIR);
 }
 
+static void glyph_square(float cx, float cy, float s) {
+    thick_line(cx - s, cy - s, cx + s, cy - s, 3, C_SYM_SQ);
+    thick_line(cx + s, cy - s, cx + s, cy + s, 3, C_SYM_SQ);
+    thick_line(cx + s, cy + s, cx - s, cy + s, 3, C_SYM_SQ);
+    thick_line(cx - s, cy + s, cx - s, cy - s, 3, C_SYM_SQ);
+}
+
 static void glyph_pill(float x, float cy, const char *label) {
     int w = text_w(0.62f, label) + 16;
     fill_rrect(x, cy - 10, w, 20, 10, RGBA8(0x2A, 0x3D, 0x70, 0xFF));
     text(x + 8, cy + 6, 0.62f, C_TEXT_2, label);
 }
 
-/* Devuelve el ancho ocupado. kind: 'x','t','o' o texto de píldora. */
+/* Devuelve el ancho ocupado. kind: 'x','t','s','o' o texto de píldora. */
 static int hint(float x, float cy, int kind, const char *pill,
                 const char *label) {
     int gw = 22;
@@ -212,6 +222,8 @@ static int hint(float x, float cy, int kind, const char *pill,
         glyph_cross(x + 10, cy, 7);
     } else if (kind == 't') {
         glyph_triangle(x + 10, cy + 1, 7);
+    } else if (kind == 's') {
+        glyph_square(x + 10, cy, 6);
     } else {
         glyph_circle(x + 10, cy, 7);
     }
@@ -338,35 +350,49 @@ bad:
     return count;
 }
 
-/* Lee una entrada de un zip/JAR (stored o deflate). */
-static unsigned char *jar_entry(const char *jar, const char *entry,
-                                int *out_len) {
-    FILE *f;
+/* Directorio central de un zip/JAR abierto (NULL si no es un zip). */
+static unsigned char *jar_cd(FILE *f, int *entries, int *cd_size) {
     long size, tail, cd_off;
-    unsigned char *t = NULL, *cd = NULL, *data = NULL, *out = NULL;
-    int i, entries, cd_size, p;
-    if (!jar[0] || !entry[0]) return NULL;
-    f = fopen(jar, "rb");
-    if (!f) return NULL;
+    unsigned char *t, *cd = NULL;
+    int i;
     fseek(f, 0, SEEK_END);
     size = ftell(f);
     tail = size < 65557 ? size : 65557;
     t = malloc((size_t)tail);
-    if (!t) goto done;
+    if (!t) return NULL;
     fseek(f, size - tail, SEEK_SET);
     if (fread(t, 1, (size_t)tail, f) != (size_t)tail) goto done;
     for (i = (int)tail - 22; i >= 0; i--) {
         if (rd32(t + i) == 0x06054b50) break;
     }
     if (i < 0) goto done;
-    entries = rd16(t + i + 10);
-    cd_size = rd32(t + i + 12);
+    *entries = rd16(t + i + 10);
+    *cd_size = rd32(t + i + 12);
     cd_off = rd32(t + i + 16);
-    if (cd_size <= 0 || cd_size > 4 * 1024 * 1024) goto done;
-    cd = malloc((size_t)cd_size);
+    if (*cd_size <= 0 || *cd_size > 4 * 1024 * 1024) goto done;
+    cd = malloc((size_t)*cd_size);
     if (!cd) goto done;
     fseek(f, cd_off, SEEK_SET);
-    if (fread(cd, 1, (size_t)cd_size, f) != (size_t)cd_size) goto done;
+    if (fread(cd, 1, (size_t)*cd_size, f) != (size_t)*cd_size) {
+        free(cd);
+        cd = NULL;
+    }
+done:
+    free(t);
+    return cd;
+}
+
+/* Lee una entrada de un zip/JAR (stored o deflate). */
+static unsigned char *jar_entry(const char *jar, const char *entry,
+                                int *out_len) {
+    FILE *f;
+    unsigned char *cd = NULL, *data = NULL, *out = NULL;
+    int i, entries = 0, cd_size = 0, p;
+    if (!jar[0] || !entry[0]) return NULL;
+    f = fopen(jar, "rb");
+    if (!f) return NULL;
+    cd = jar_cd(f, &entries, &cd_size);
+    if (!cd) goto done;
     for (p = 0, i = 0; i < entries && p + 46 <= cd_size; i++) {
         int method = rd16(cd + p + 10);
         int csize = rd32(cd + p + 20), usize = rd32(cd + p + 24);
@@ -411,9 +437,100 @@ static unsigned char *jar_entry(const char *jar, const char *entry,
         p += 46 + nlen + xlen + clen;
     }
 done:
-    free(t); free(cd); free(data);
+    free(cd); free(data);
     fclose(f);
     return out;
+}
+
+/* Ancho y alto de un PNG del JAR sin descomprimirlo entero: basta con
+ * los primeros 24 bytes (firma + IHDR). */
+static int png_size(FILE *f, const unsigned char *ce, int *w, int *h) {
+    unsigned char lh[30], in[256], out[24];
+    int method = rd16(ce + 10), csize = rd32(ce + 20), n;
+    fseek(f, rd32(ce + 42), SEEK_SET);
+    if (fread(lh, 1, 30, f) != 30 || rd32(lh) != 0x04034b50) return 0;
+    fseek(f, rd32(ce + 42) + 30 + rd16(lh + 26) + rd16(lh + 28), SEEK_SET);
+    n = csize < (int)sizeof(in) ? csize : (int)sizeof(in);
+    if (n < 24 || fread(in, 1, (size_t)n, f) != (size_t)n) return 0;
+    if (method == 0) {
+        memcpy(out, in, 24);
+    } else if (method == 8) {
+        z_stream zs;
+        int ok;
+        memset(&zs, 0, sizeof(zs));
+        zs.next_in = in; zs.avail_in = (uInt)n;
+        zs.next_out = out; zs.avail_out = sizeof(out);
+        if (inflateInit2(&zs, -MAX_WBITS) != Z_OK) return 0;
+        inflate(&zs, Z_SYNC_FLUSH);
+        ok = zs.total_out >= 24;
+        inflateEnd(&zs);
+        if (!ok) return 0;
+    } else {
+        return 0;
+    }
+    if (memcmp(out, "\x89PNG", 4) != 0 || memcmp(out + 12, "IHDR", 4) != 0)
+        return 0;
+    *w = (out[16] << 24) | (out[17] << 16) | (out[18] << 8) | out[19];
+    *h = (out[20] << 24) | (out[21] << 16) | (out[22] << 8) | out[23];
+    return 1;
+}
+
+static int known_res(int w, int h) {
+    int i;
+    for (i = 0; i < vj_res_n; i++)
+        if (vj_res[i][0] == w && vj_res[i][1] == h) return 1;
+    return 0;
+}
+
+/* Atributo "W,H" o "WxH" del manifiesto. */
+static int manifest_size(const char *m, const char *key, int *w, int *h) {
+    const char *p = strstr(m, key);
+    if (!p) return 0;
+    p += strlen(key);
+    while (*p == ':' || *p == ' ') p++;
+    return sscanf(p, "%d%*[,xX ]%d", w, h) == 2 && *w > 0 && *h > 0 &&
+           *w <= 640 && *h <= 640;
+}
+
+int jar_detect_screen(const char *jar, int *w, int *h) {
+    static const char *const keys[] = {
+        "Nokia-MIDlet-Original-Display-Size",
+        "Nokia-MIDlet-Target-Display-Size",
+    };
+    int len = 0, i, p, entries = 0, cd_size = 0, best = 0;
+    char *m = (char *)jar_entry(jar, "META-INF/MANIFEST.MF", &len);
+    FILE *f;
+    unsigned char *cd;
+    if (m) {
+        for (i = 0; i < 2; i++) {
+            if (manifest_size(m, keys[i], w, h)) {
+                free(m);
+                return 1;
+            }
+        }
+        free(m);
+    }
+    /* Sin atributos: el PNG más grande con tamaño de pantalla conocido
+     * (splash y fondos a pantalla completa, típico de Gameloft y cía). */
+    f = fopen(jar, "rb");
+    if (!f) return 0;
+    cd = jar_cd(f, &entries, &cd_size);
+    for (p = 0, i = 0; cd && i < entries && p + 46 <= cd_size; i++) {
+        int nlen = rd16(cd + p + 28), pw, ph;
+        const char *name = (const char *)cd + p + 46;
+        if (rd32(cd + p) != 0x02014b50) break;
+        if (nlen > 4 && strncasecmp(name + nlen - 4, ".png", 4) == 0 &&
+            png_size(f, cd + p, &pw, &ph) && known_res(pw, ph) &&
+            pw * ph > best) {
+            best = pw * ph;
+            *w = pw;
+            *h = ph;
+        }
+        p += 46 + nlen + rd16(cd + p + 30) + rd16(cd + p + 32);
+    }
+    free(cd);
+    fclose(f);
+    return best > 0;
 }
 
 /* Completa clase/icono desde MIDlet-1 del manifiesto si faltan. */
@@ -668,11 +785,15 @@ static void draw_bottom_bar(const scene *sc) {
     x = 48;
     if (sc->info) {
         x += hint(x, cy, 'x', NULL, sc->sel < sc->n ? "Jugar" : "Abrir") + 28;
+        x += hint(x, cy, 's', NULL, "Ajustes") + 28;
         hint(x, cy, 'o', NULL, "Volver");
         return;
     }
     x += hint(x, cy, 'x', NULL, sc->sel < sc->n ? "Jugar" : "Abrir") + 28;
-    if (sc->sel < sc->n) x += hint(x, cy, 't', NULL, "Detalles") + 28;
+    if (sc->sel < sc->n) {
+        x += hint(x, cy, 's', NULL, "Ajustes") + 28;
+        x += hint(x, cy, 't', NULL, "Detalles") + 28;
+    }
     x += hint(x, cy, 0, "START", "Gestor clásico") + 28;
     hint(x, cy, 'o', NULL, "Salir");
 }
@@ -766,6 +887,264 @@ static void draw_launching(const scene *sc, const char *name, float fade) {
 }
 
 /* ======================================================================
+ * Ajustes por juego (□): pantalla, teclado virtual, táctil y botones
+ * ====================================================================== */
+
+enum {
+    ROW_RES, ROW_SCALE, ROW_FILTER, ROW_PAD, ROW_TOUCH,
+    ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N, ROW_N
+};
+
+static const char *const scale_names[] = {
+    "", "Ajustar (mantiene proporción)", "Escalado entero (nítido)",
+    "Estirar a la zona", "Tamaño original",
+};
+static const char *const pad_names[] = {
+    "Automático", "Desactivado", "A la izquierda", "A la derecha",
+    "A ambos lados",
+};
+
+static const char *row_help(int r) {
+    switch (r) {
+    case ROW_RES:
+        return "Pantalla del móvil para el que se hizo el juego. Automática "
+               "la deduce del JAR. Requiere reiniciar el juego.";
+    case ROW_SCALE:
+        return "Cómo se agranda el juego en la pantalla de la Vita.";
+    case ROW_FILTER:
+        return "Nítido conserva los píxeles; suave los difumina al escalar.";
+    case ROW_PAD:
+        return "Teclado de móvil táctil en los laterales, con el juego en el "
+               "centro. Automático: solo en juegos verticales.";
+    case ROW_TOUCH:
+        return "Tocar el juego envía el puntero al MIDlet (juegos táctiles). "
+               "Requiere reiniciar el juego.";
+    case ROW_RESET:
+        return "Vuelve a los valores por defecto de este juego.";
+    default:
+        return "Tecla del móvil que envía este botón de la Vita.";
+    }
+}
+
+static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
+    int w, h;
+    if (r >= ROW_MAP0 && r < ROW_RESET) {
+        snprintf(label, cap, "%s", vj_btn_name[r - ROW_MAP0]);
+        snprintf(val, cap, "%s", cfg_key_name(c->map[r - ROW_MAP0]));
+        return;
+    }
+    val[0] = 0;
+    switch (r) {
+    case ROW_RES:
+        snprintf(label, cap, "Resolución");
+        cfg_screen(c, &w, &h);
+        if (c->res) snprintf(val, cap, "%d x %d", w, h);
+        else snprintf(val, cap, "Automática (%d x %d)", w, h);
+        break;
+    case ROW_SCALE:
+        snprintf(label, cap, "Escala");
+        snprintf(val, cap, "%s", scale_names[c->scale]);
+        break;
+    case ROW_FILTER:
+        snprintf(label, cap, "Filtro");
+        snprintf(val, cap, "%s", c->filter ? "Suave" : "Nítido");
+        break;
+    case ROW_PAD:
+        snprintf(label, cap, "Teclado virtual");
+        snprintf(val, cap, "%s", pad_names[c->keypad]);
+        break;
+    case ROW_TOUCH:
+        snprintf(label, cap, "Pantalla táctil");
+        snprintf(val, cap, "%s", c->touch ? "Activada" : "Desactivada");
+        break;
+    default:
+        snprintf(label, cap, "Restaurar valores por defecto");
+        break;
+    }
+}
+
+static int wrap(int v, int d, int n) {
+    v += d;
+    if (v < 0) v = n - 1;
+    if (v >= n) v = 0;
+    return v;
+}
+
+static void row_change(vj_cfg *c, int r, int d) {
+    int i;
+    if (r >= ROW_MAP0 && r < ROW_RESET) {
+        int *m = &c->map[r - ROW_MAP0];
+        for (i = 0; i < vj_keys_n; i++)
+            if (vj_key_codes[i] == *m) break;
+        *m = vj_key_codes[wrap(i < vj_keys_n ? i : 0, d, vj_keys_n)];
+        return;
+    }
+    switch (r) {
+    case ROW_RES: c->res = wrap(c->res, d, vj_res_n + 1); break;
+    case ROW_SCALE: c->scale = wrap(c->scale - 1, d, 4) + 1; break;
+    case ROW_FILTER: c->filter = !c->filter; break;
+    case ROW_PAD: c->keypad = wrap(c->keypad, d, 5); break;
+    case ROW_TOUCH: c->touch = !c->touch; break;
+    }
+}
+
+/* Miniatura de la pantalla de la Vita con el layout real. */
+static void draw_preview(const vj_cfg *c, float px, float py, float pw) {
+    vj_layout lo;
+    float k = pw / SCR_W, ph = SCR_H * k;
+    char buf[32];
+    int i, w, h;
+    cfg_layout(c, &lo);
+    cfg_screen(c, &w, &h);
+    fill_rrect(px - 6, py - 6, pw + 12, ph + 12, 12, RGBA8(0x00, 0x00, 0x00, 0xFF));
+    for (i = 0; i < 2; i++)
+        if (lo.panel[i][2] > 0)
+            vita2d_draw_rectangle(px + lo.panel[i][0] * k, py + lo.panel[i][1] * k,
+                                  lo.panel[i][2] * k, lo.panel[i][3] * k,
+                                  RGBA8(0x07, 0x10, 0x2C, 0xFF));
+    for (i = 0; i < lo.nkeys; i++)
+        fill_rrect(px + lo.keys[i].x * k, py + lo.keys[i].y * k,
+                   lo.keys[i].w * k, lo.keys[i].h * k, 3,
+                   RGBA8(0x18, 0x2A, 0x5A, 0xFF));
+    fill_vgrad(px + lo.dest[0] * k, py + lo.dest[1] * k, lo.dest[2] * k,
+               lo.dest[3] * k, art_top[0], art_bot[0]);
+    snprintf(buf, sizeof(buf), "%d x %d", w, h);
+    text(px + (lo.dest[0] + lo.dest[2] / 2) * k - text_w(0.8f, buf) / 2.0f,
+         py + (lo.dest[1] + lo.dest[3] / 2) * k + 6, 0.8f, C_WHITE, buf);
+}
+
+/* Texto en varias líneas, partiendo por palabras. */
+static void text_wrap(float x, float y, float scale, unsigned int c,
+                      const char *s, int max_w) {
+    char line[200] = "", trial[200];
+    while (*s) {
+        int n = (int)strcspn(s, " ");
+        snprintf(trial, sizeof(trial), "%s%s%.*s", line, line[0] ? " " : "",
+                 n, s);
+        if (line[0] && text_w(scale, trial) > max_w) {
+            text(x, y, scale, c, line);
+            y += 24;
+            snprintf(line, sizeof(line), "%.*s", n, s);
+        } else {
+            memcpy(line, trial, sizeof(line));
+        }
+        s += n;
+        while (*s == ' ') s++;
+    }
+    if (line[0]) text(x, y, scale, c, line);
+}
+
+static void draw_settings(const scene *sc, const vj_game *g, const vj_cfg *c,
+                          int row, int top) {
+    const int vis = 10, rh = 34;
+    char label[80], val[80];
+    float y, x0 = 48, x1 = 560;
+    int i;
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    draw_background(sc->frame);
+    text(48, 54, 1.3f, C_WHITE, "Ajustes del juego");
+    text_fit(48 + text_w(1.3f, "Ajustes del juego") + 14, 54, 0.9f, C_TEXT_2,
+             g->name, SCR_W - 420);
+
+    y = 92;
+    for (i = top; i < top + vis && i < ROW_N; i++, y += rh) {
+        int sel = i == row;
+        row_text(c, i, label, val, sizeof(label));
+        if (sel) fill_rrect(x0 - 12, y, x1 - x0 + 24, rh - 4, 10, C_ACCENT);
+        text_fit(x0, y + 22, 0.82f, sel ? C_WHITE : C_TEXT_2, label, 230);
+        if (val[0]) {
+            float vw = text_w(0.82f, val);
+            if (vw > 250) vw = 250;
+            if (sel) {
+                glyph_pill(x1 - vw - 46, y + 13, "<");
+                text_fit(x1 - vw - 16, y + 22, 0.82f, C_WHITE, val, 250);
+                glyph_pill(x1 - 6, y + 13, ">");
+            } else {
+                text_fit(x1 - vw, y + 22, 0.82f, C_WHITE, val, 250);
+            }
+        }
+    }
+    /* barra de scroll */
+    if (ROW_N > vis) {
+        float bh = (float)(vis * rh) * vis / ROW_N;
+        float by = 92 + (float)(vis * rh - bh) * top / (ROW_N - vis);
+        vita2d_draw_rectangle(x1 + 22, 92, 3, vis * rh, C_PANEL_LINE);
+        vita2d_draw_rectangle(x1 + 21, by, 5, bh, C_GLOW);
+    }
+
+    /* derecha: vista previa + ayuda */
+    text(612, 104, 0.8f, C_TEXT_2, "Vista previa");
+    draw_preview(c, 612, 120, 300);
+    text_wrap(612, 330, 0.78f, C_TEXT_2, row_help(row), 300);
+
+    vita2d_draw_rectangle(0, 498, SCR_W, 46, C_BAR);
+    vita2d_draw_rectangle(0, 498, SCR_W, 1, C_PANEL_LINE);
+    x0 = 48;
+    if (row == ROW_RESET) x0 += hint(x0, 522, 'x', NULL, "Restaurar") + 28;
+    else x0 += hint(x0, 522, 0, "< >", "Cambiar") + 28;
+    hint(x0, 522, 'o', NULL, "Guardar y volver");
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+/* Devuelve 1 si se guardaron cambios. */
+static int settings_run(scene *sc, const vj_game *g) {
+    static vj_cfg c, orig;
+    SceCtrlData pad;
+    unsigned int old = ~0u;
+    int row = 0, top = 0, hold = 0;
+    cfg_load(g, &c);
+    orig = c;
+    for (;;) {
+        unsigned int now, down;
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+        now = pad.buttons;
+        if (pad.ly < 50) now |= SCE_CTRL_UP;
+        if (pad.ly > 205) now |= SCE_CTRL_DOWN;
+        if (pad.lx < 50) now |= SCE_CTRL_LEFT;
+        if (pad.lx > 205) now |= SCE_CTRL_RIGHT;
+        down = now & ~old;
+        if (now & (SCE_CTRL_UP | SCE_CTRL_DOWN | SCE_CTRL_LEFT | SCE_CTRL_RIGHT)) {
+            if (++hold > 22 && hold % 5 == 0)
+                down |= now & (SCE_CTRL_UP | SCE_CTRL_DOWN | SCE_CTRL_LEFT |
+                               SCE_CTRL_RIGHT);
+        } else {
+            hold = 0;
+        }
+        old = now;
+
+        if (down & SCE_CTRL_UP) row = wrap(row, -1, ROW_N);
+        if (down & SCE_CTRL_DOWN) row = wrap(row, 1, ROW_N);
+        if (down & (SCE_CTRL_LEFT | SCE_CTRL_LTRIGGER)) row_change(&c, row, -1);
+        if (down & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER | SCE_CTRL_CROSS)) {
+            if (row == ROW_RESET) {
+                if (down & SCE_CTRL_CROSS) {
+                    int aw = c.auto_w, ah = c.auto_h;
+                    cfg_defaults(&c);
+                    c.auto_w = aw;
+                    c.auto_h = ah;
+                }
+            } else {
+                row_change(&c, row, 1);
+            }
+        }
+        if (down & SCE_CTRL_CIRCLE) break;
+        if (row < top) top = row;
+        if (row >= top + 10) top = row - 9;
+
+        sc->frame++;
+        draw_settings(sc, g, &c, row, top);
+    }
+    if (memcmp(&c, &orig, sizeof(c)) != 0) {
+        cfg_save(g, &c);
+        vj_log("launcher: ajustes de '%s' guardados", g->name);
+        return 1;
+    }
+    return 0;
+}
+
+/* ======================================================================
  * Bucle
  * ====================================================================== */
 
@@ -777,7 +1156,13 @@ static float target_scroll(const scene *sc) {
     return t;
 }
 
-int launcher_run(vj_game *out) {
+int launcher_list(vj_game *g, int max) {
+    int i, n = load_suites(g, max);
+    for (i = 0; i < n; i++) fill_from_manifest(&g[i]);
+    return n;
+}
+
+int launcher_run(vj_game *out, int preselect) {
     static scene sc;
     SceCtrlData pad;
     SceTouchData touch;
@@ -790,11 +1175,12 @@ int launcher_run(vj_game *out) {
         vj_log("launcher: sin fuente PGF -> gestor clásico");
         return LAUNCHER_CLASSIC;
     }
-    sc.n = load_suites(sc.games, MAX_GAMES);
+    sc.n = launcher_list(sc.games, MAX_GAMES);
     for (i = 0; i < sc.n; i++) {
-        fill_from_manifest(&sc.games[i]);
         sc.icons[i] = load_icon(&sc.games[i]);
+        if (sc.games[i].suite_id == preselect) sc.sel = i;
     }
+    sc.scroll = target_scroll(&sc);
     vj_log("launcher: %d juego(s) listados", sc.n);
 
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT,
@@ -834,6 +1220,11 @@ int launcher_run(vj_game *out) {
         }
         was_touch = touch.reportNum > 0;
 
+        if ((down & SCE_CTRL_SQUARE) && sc.sel < sc.n) {
+            settings_run(&sc, &sc.games[sc.sel]);
+            old = ~0u;  /* que el ○ de salir de ajustes no cierre esto */
+            continue;
+        }
         if (sc.info) {
             if (down & SCE_CTRL_CROSS) act_play = 1;
             if (down & (SCE_CTRL_CIRCLE | SCE_CTRL_TRIANGLE)) sc.info = 0;
@@ -1027,8 +1418,25 @@ static int loading_hook(int has_content) {
     return 0;
 }
 
-void launcher_loading_start(void) {
-    if (!font) return;
+/* Precarga: la VM arranca detrás de la biblioteca; ninguno de sus
+ * frames se presenta hasta launcher_loading_start(). */
+static int hold_hook(int has_content) {
+    (void)has_content;
+    return 1;
+}
+
+void launcher_preload_hold(void) {
+    vita_lcd_loading_hook = hold_hook;
+}
+
+void launcher_loading_start(const vj_game *g) {
+    if (!font) font = vita2d_load_default_pgf();
+    if (!font) {
+        vita_lcd_loading_hook = 0;
+        return;
+    }
+    ld.game = *g;
+    if (!ld.icon) ld.icon = load_icon(g);  /* la biblioteca deja el suyo */
     ld.stop = 0;
     ld.midlet_frames = 0;
     ld.t0 = sceKernelGetProcessTimeWide();
@@ -1040,6 +1448,7 @@ void launcher_loading_start(void) {
         vita2d_free_pgf(font);
         font = NULL;
         vita2d_set_vblank_wait(0);
+        vita_lcd_loading_hook = 0;
         return;
     }
     vita_lcd_loading_hook = loading_hook;

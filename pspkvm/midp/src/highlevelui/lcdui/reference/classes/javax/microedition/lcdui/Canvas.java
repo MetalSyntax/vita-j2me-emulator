@@ -512,7 +512,18 @@ public abstract class Canvas extends Displayable {
      */
     public boolean hasPointerEvents() {
         // SYNC NOTE: return of atomic value, no locking necessary
-        return Constants.POINTER_SUPPORTED;
+        return VITA_TOUCH;
+    }
+
+    /**
+     * VitaJ2ME: el táctil se activa por juego desde el frontend nativo
+     * (-Dvita.flags=...T...). POINTER_SUPPORTED es false en este build.
+     */
+    private static final boolean VITA_TOUCH = vitaFlag('T');
+
+    static boolean vitaFlag(char c) {
+        String f = System.getProperty("vita.flags");
+        return f != null && f.indexOf(c) >= 0;
     }
     
     /**
@@ -523,7 +534,7 @@ public abstract class Canvas extends Displayable {
      */
     public boolean hasPointerMotionEvents() {
         // SYNC NOTE: return of atomic value, no locking necessary
-        return Constants.MOTION_SUPPORTED;
+        return VITA_TOUCH;
     }
     
     /**

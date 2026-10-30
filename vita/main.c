@@ -26,6 +26,7 @@
 #include <psp2/io/stat.h>
 #include <psp2/io/dirent.h>
 #include <psp2/appmgr.h>
+#include <psp2/power.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +37,7 @@
 #include "javacall_logging.h"
 #include "javacall_events.h"
 #include "launcher.h"
+#include "gamecfg.h"
 
 /* Entrypoints de libmidp.a (jams_port/javacall + javacall_common). */
 void JavaTask(void);
@@ -653,23 +655,29 @@ static void vita_send_start(int argc, char *argv[]) {
  * el isolate PRINCIPAL (createMIDletSuite -> startSuite), sin
  * MVMManager.launchSuite ni Isolate nuevo — el camino que en HW 037
  * dejó la JVM dormida en "Launching MIDlet..." para siempre. */
-static void vita_start_game(const vj_game *g) {
+static void vita_start_game(const vj_game *g, const vj_cfg *c, int gate) {
     static char suite[16];
     static char cls[128];
+    /* Lo leen los parches Java: T = táctil (Canvas.hasPointerEvents),
+     * G = precarga (AbstractMIDletSuiteLoader espera a appdb/_vjwait). */
+    static char flags[32];
     char *argv[] = {
         vita_arg_runmidlet,
         vita_arg_D_profiles,
         vita_arg_D_config,
         vita_arg_D_encoding,
+        flags,
         vita_arg_classpathext,
         vita_arg_classes,
         suite,
         cls,
     };
+    snprintf(flags, sizeof(flags), "-Dvita.flags=%s%s-", c->touch ? "T" : "",
+             gate ? "G" : "");
     snprintf(suite, sizeof(suite), "%d", g->suite_id);
     snprintf(cls, sizeof(cls), "%s", g->cls);
-    log_line("vita_start_game() -> suite %s '%s' (%s), directo sin AMS",
-             suite, g->name, cls);
+    log_line("vita_start_game() -> suite %s '%s' (%s), directo sin AMS, %s",
+             suite, g->name, cls, flags);
     vita_send_start((int)(sizeof(argv) / sizeof(argv[0])), argv);
 }
 
@@ -744,8 +752,168 @@ static void boot_installer_mode(const char *fname) {
     sceKernelExitProcess(0);
 }
 
+/* ======================================================================
+ * Biblioteca + precarga
+ *
+ * Un proceso = un runMidlet (bug #20), y la VM tarda ~20 s en tener MIDP
+ * listo (sin ROM ni JIT: clases de classes.zip interpretadas). Así que
+ * la VM arranca YA con el juego más probable (el último jugado) mientras
+ * la biblioteca sigue en pantalla, y se detiene justo antes de arrancar
+ * el MIDlet (parche en AbstractMIDletSuiteLoader, -Dvita.flags=G) hasta
+ * que se borra appdb/_vjwait. Si se elige otro juego o se cambia algo
+ * que la VM ya fijó (resolución, táctil), la app se relanza con -play.
+ * ====================================================================== */
+
+#define GATE_FILE VITA_HOME "/appdb/_vjwait"
+
+static vj_game pre_game;
+static vj_cfg pre_cfg;
+static volatile int vm_dead = 0, game_started = 0;
+
+static void relaunch(const char *a1, const char *a2) {
+    char *args[3] = { (char *)a1, (char *)a2, NULL };
+    log_line("relanzando app0:eboot.bin %s %s", a1 ? a1 : "",
+             a2 ? a2 : "");
+    sceAppMgrLoadExec("app0:eboot.bin", a1 ? args : NULL, NULL);
+    sceKernelExitProcess(0);
+}
+
+static void relaunch_play(int suite_id) {
+    static char id[16];
+    snprintf(id, sizeof(id), "%d", suite_id);
+    relaunch("-play", id);
+}
+
+static void run_ams(void) {
+    vita_start_ams();
+    log_line("JavaTask() >> (toma el hilo principal)");
+    JavaTask();
+    log_line("<< JavaTask() retornó (shutdown)");
+    log_line("bringup OK. sceKernelExitProcess(0)");
+    sceKernelExitProcess(0);
+}
+
+/* Tras JavaTask: el juego terminó -> volver a la biblioteca. */
+static void back_to_library(void) {
+    log_line("<< JavaTask() retornó: el juego terminó");
+    relaunch(NULL, NULL);
+}
+
+/* fallback: si no está, el primero instalado. */
+static int find_game(int suite_id, int fallback, vj_game *out) {
+    static vj_game list[64];
+    int i, n = launcher_list(list, 64);
+    for (i = 0; i < n; i++) {
+        if (list[i].suite_id == suite_id) {
+            *out = list[i];
+            return 1;
+        }
+    }
+    if (n > 0 && fallback) {
+        *out = list[0];
+        return 1;
+    }
+    return 0;
+}
+
+/* Sin precarga (relanzado con -play): directo a la pantalla de carga. */
+static void play_direct(int suite_id) {
+    static vj_game g;
+    static vj_cfg c;
+    if (!find_game(suite_id, 0, &g) || !g.cls[0]) {
+        log_line("-play %d: juego no encontrado -> biblioteca", suite_id);
+        relaunch(NULL, NULL);
+        return;
+    }
+    cfg_load(&g, &c);
+    cfg_apply(&c);
+    cfg_set_last_suite(g.suite_id);
+    log_line("MODO JUEGO DIRECTO (-play, sin precarga)...");
+    vita_start_game(&g, &c, 0);
+    launcher_loading_start(&g);
+    log_line("JavaTask() >> (toma el hilo principal)");
+    JavaTask();
+    back_to_library();
+}
+
+static int library_thread(SceSize args, void *argp) {
+    static vj_game g;
+    static vj_cfg c;
+    int choice, w0, h0, w1, h1;
+    (void)args; (void)argp;
+    choice = launcher_run(&g, pre_game.suite_id);
+    if (choice == LAUNCHER_EXIT) {
+        log_line("biblioteca: salir. sceKernelExitProcess(0)");
+        sceKernelExitProcess(0);
+    }
+    if (choice == LAUNCHER_CLASSIC) relaunch("-ams", NULL);
+
+    cfg_set_last_suite(g.suite_id);
+    cfg_load(&g, &c);
+    cfg_screen(&pre_cfg, &w0, &h0);
+    cfg_screen(&c, &w1, &h1);
+    if (g.suite_id != pre_game.suite_id || w0 != w1 || h0 != h1 ||
+        c.touch != pre_cfg.touch || vm_dead) {
+        log_line("precarga descartada (%s) -> -play %d",
+                 g.suite_id != pre_game.suite_id ? "otro juego"
+                 : vm_dead ? "la VM terminó" : "cambió resolución/táctil",
+                 g.suite_id);
+        relaunch_play(g.suite_id);
+    }
+    /* Mismo juego: lo demás (escala, filtro, teclado, botones) se aplica
+     * en caliente, y se abre la compuerta. */
+    cfg_apply(&c);
+    launcher_loading_start(&g);
+    game_started = 1;
+    suspend_key_input = 0;
+    sceIoRemove(GATE_FILE);
+    log_line("precarga: '%s' elegido, compuerta abierta", g.name);
+    return 0;
+}
+
+static void library_with_preload(void) {
+    SceUID th;
+    int fd;
+    if (!find_game(cfg_last_suite(), 1, &pre_game) || !pre_game.cls[0]) {
+        /* nada instalado: biblioteca sin precarga (solo gestor/salir) */
+        static vj_game g;
+        int choice = launcher_run(&g, -1);
+        if (choice == LAUNCHER_EXIT) sceKernelExitProcess(0);
+        if (choice == LAUNCHER_PLAY) relaunch_play(g.suite_id);
+        log_line("MODO AMS (gestor clásico)...");
+        run_ams();
+        return;
+    }
+    cfg_load(&pre_game, &pre_cfg);
+    cfg_apply(&pre_cfg);
+    fd = sceIoOpen(GATE_FILE, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    if (fd >= 0) sceIoClose(fd);
+    launcher_preload_hold();
+    suspend_key_input = 1;
+    log_line("precarga: VM con '%s' (suite %d) tras la biblioteca",
+             pre_game.name, pre_game.suite_id);
+    vita_start_game(&pre_game, &pre_cfg, fd >= 0);
+
+    th = sceKernelCreateThread("vj_library", library_thread, 0x10000100,
+                               0x10000, 0, SCE_KERNEL_CPU_MASK_USER_1, NULL);
+    if (th < 0) {
+        log_line("FATAL hilo de la biblioteca (0x%08x)", (unsigned)th);
+        sceIoRemove(GATE_FILE);
+        sceKernelExitProcess(1);
+    }
+    sceKernelStartThread(th, 0, NULL);
+    log_line("JavaTask() >> (toma el hilo principal, precarga)");
+    JavaTask();
+    vm_dead = 1;
+    log_line("<< JavaTask() retornó (juego %s)",
+             game_started ? "terminado" : "aún sin elegir");
+    sceKernelWaitThreadEnd(th, NULL, NULL);
+    if (game_started) back_to_library();
+    /* la VM murió antes de elegir; library_thread ya relanzó con -play */
+    sceKernelExitProcess(0);
+}
+
 int main(int argc, char *argv[]) {
-    (void)argc; (void)argv;
 
     /* Este hilo corre la JVM (JavaTask lo toma): el watchdog lo muestrea. */
     vita_main_tid = sceKernelGetThreadId();
@@ -763,6 +931,15 @@ int main(int argc, char *argv[]) {
      * Vita retail nadie lee — syscalls puras en el hilo de la JVM. */
     javacall_logging_channel(JAVACALL_LOG_CHANNEL_FILE);
     log_line("frontend nativo (Vita, ARMv7)");
+    /* La VM es un intérprete puro (sin JIT): 444 MHz se nota en todo,
+     * sobre todo en los ~20 s de arranque de MIDP. */
+    scePowerSetArmClockFrequency(444);
+    scePowerSetBusClockFrequency(222);
+    scePowerSetGpuClockFrequency(222);
+    scePowerSetGpuXbarClockFrequency(166);
+    log_line("CPU %d MHz, bus %d MHz, GPU %d MHz",
+             scePowerGetArmClockFrequency(), scePowerGetBusClockFrequency(),
+             scePowerGetGpuClockFrequency());
     log_line("fb objetivo: %dx%d (x2 de PSP 480x272)", FB_W, FB_H);
 
     // --- Input bringup (Fase 3: javacall keypress.c) ---
@@ -863,37 +1040,16 @@ int main(int argc, char *argv[]) {
             return 0; /* inalcanzable (exit dentro), por claridad */
         }
     }
-    /* Biblioteca nativa (sesión 38): elige juego o gestor clásico. */
-    {
-        static vj_game game;
-        int choice = launcher_run(&game);
-        if (choice == LAUNCHER_EXIT) {
-            log_line("biblioteca: salir. sceKernelExitProcess(0)");
-            sceKernelExitProcess(0);
-            return 0;
-        }
-        if (choice == LAUNCHER_PLAY) {
-            log_line("MODO JUEGO DIRECTO (sin AMS)...");
-            vita_start_game(&game);
-            launcher_loading_start();
-            log_line("JavaTask() >> (toma el hilo principal)");
-            JavaTask();
-            log_line("<< JavaTask() retornó: el juego terminó");
-            /* Un proceso = un runMidlet (bug #20): para volver a la
-             * biblioteca se relanza la propia app. */
-            log_line("relanzando app0:eboot.bin -> biblioteca");
-            sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
-            sceKernelExitProcess(0);
-            return 0;
-        }
+    /* Relanzamientos de la propia app (ver relaunch()). */
+    if (argc >= 2 && !strcmp(argv[1], "-ams")) {
+        log_line("MODO AMS (gestor clásico, pedido desde la biblioteca)...");
+        run_ams();
+        return 0;
     }
-    log_line("MODO AMS (gestor clásico)...");
-    vita_start_ams();
-    log_line("JavaTask() >> (toma el hilo principal)");
-    JavaTask();
-    log_line("<< JavaTask() retornó (shutdown)");
-
-    log_line("bringup OK. sceKernelExitProcess(0)");
-    sceKernelExitProcess(0);
+    if (argc >= 3 && !strcmp(argv[1], "-play")) {
+        play_direct(atoi(argv[2]));
+        return 0;
+    }
+    library_with_preload();
     return 0;
 }

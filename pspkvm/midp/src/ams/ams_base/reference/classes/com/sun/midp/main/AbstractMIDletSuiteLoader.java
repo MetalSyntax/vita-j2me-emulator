@@ -192,6 +192,55 @@ abstract class AbstractMIDletSuiteLoader
     }
 
     /**
+     * VitaJ2ME: con -Dvita.flags=...G... la VM se arranca en segundo plano
+     * mientras la biblioteca nativa sigue en pantalla. Aquí ya está
+     * cargado todo MIDP; se calientan las clases que todo juego usa y se
+     * espera a que el frontend borre el fichero de espera.
+     */
+    private void vitaGate() {
+        String f = System.getProperty("vita.flags");
+        if (f == null || f.indexOf('G') < 0) {
+            return;
+        }
+        String[] warm = {
+            "javax.microedition.lcdui.Canvas",
+            "javax.microedition.lcdui.game.GameCanvas",
+            "javax.microedition.lcdui.game.Sprite",
+            "javax.microedition.lcdui.game.TiledLayer",
+            "javax.microedition.lcdui.Image",
+            "javax.microedition.rms.RecordStore",
+            "javax.microedition.media.Manager",
+        };
+        for (int i = 0; i < warm.length; i++) {
+            try {
+                Class.forName(warm[i]);
+            } catch (Throwable t) {
+                // clase opcional en este build: seguir
+            }
+        }
+        try {
+            javax.microedition.lcdui.Image img =
+                javax.microedition.lcdui.Image.createImage(16, 16);
+            img.getGraphics().drawString("Vita", 0, 0, 0);
+        } catch (Throwable t) {
+            // solo era para cargar fuentes antes de tiempo
+        }
+        com.sun.midp.io.j2me.storage.File file =
+            new com.sun.midp.io.j2me.storage.File(internalSecurityToken);
+        String gate = com.sun.midp.io.j2me.storage.File.getStorageRoot(
+            Constants.INTERNAL_STORAGE_ID) + "_vjwait";
+        System.out.println("VITAJ2ME-GATE: MIDP listo, esperando " + gate);
+        while (file.exists(gate)) {
+            try {
+                Thread.sleep(30);
+            } catch (InterruptedException e) {
+                // seguir esperando
+            }
+        }
+        System.out.println("VITAJ2ME-GATE: abierta");
+    }
+
+    /**
      * Start MIDlet suite in the prepared environment
      * @throws Exception can be thrown during execution
      */
@@ -309,6 +358,11 @@ abstract class AbstractMIDletSuiteLoader
                 Logging.report(Logging.WARNING, LogChannels.LC_CORE,
                     "MIDlet suite task starting a suite");
             }
+
+            // VitaJ2ME: precarga. El frontend arranca la VM mientras la
+            // biblioteca sigue en pantalla y suelta el juego borrando el
+            // fichero de espera.
+            vitaGate();
 
             // Blocking call to start MIDlet suite
             // in the prepared environment

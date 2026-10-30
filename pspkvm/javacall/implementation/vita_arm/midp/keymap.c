@@ -106,6 +106,11 @@ static javacall_key java_key_table[] = {
 
 static javacall_keymap current_keymap[VITA_KEY_NUMBER];
 
+/* Mapeo por juego de la biblioteca nativa (vita/settings.c): si n > 0
+ * sustituye al de PSPKVM, sin capa de shift (L y R son botones más). */
+javacall_keymap vita_keymap_custom[32];
+int vita_keymap_custom_n = 0;
+
 // Declared extern. TODO: Use proper header
 extern int vmsettings_key_equals(const char* k, const char* cmp);
 
@@ -120,11 +125,11 @@ void javacall_keymap_init() {
 }
 
 int javacall_keymap_size() {
-    return VITA_KEY_NUMBER;
+    return vita_keymap_custom_n ? vita_keymap_custom_n : VITA_KEY_NUMBER;
 }
 
 javacall_keymap* javacall_keymap_current() {
-    return &current_keymap[0];
+    return vita_keymap_custom_n ? vita_keymap_custom : &current_keymap[0];
 }
 
 javacall_keymap javacall_keymap_set(int iJavakey, int iNativeKey) {
