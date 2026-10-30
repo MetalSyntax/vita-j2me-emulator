@@ -556,6 +556,64 @@ int jar_detect_screen(const char *jar, int *w, int *h) {
         }
         p += 46 + nlen + rd16(cd + p + 30) + rd16(cd + p + 32);
     }
+    if (best) {
+        free(cd);
+        fclose(f);
+        return 1;
+    }
+    /* Último recurso: constantes de la pantalla en el bytecode. Los juegos
+     * de tamaño fijo (Gameloft y cía) usan su ancho/alto como `sipush` por
+     * todo el código. Solo valores distintivos (128/240/320 salen en
+     * cualquier juego), cada par con su orientación habitual, y gana el
+     * par con más apariciones. Validado con 30 JAR reales (sesión 53):
+     * Asphalt 6 v1.2.0 -> 640x360, que antes caía en 240x320 cortado. */
+    {
+        static const int rules[][4] = {  /* w, h, valor a, valor b */
+            {480, 854, 854, 480}, {480, 800, 800, 480}, {640, 360, 640, 360},
+            {432, 240, 432, 240}, {400, 240, 400, 240}, {320, 480, 480, 320},
+            {352, 416, 352, 416},
+        };
+        static const int vals[] = {854, 800, 640, 480, 432, 416, 400, 360,
+                                   352, 320, 240};
+        int cnt[11] = {0}, nv = 11, r, score = 0;
+        for (p = 0, i = 0; cd && i < entries && p + 46 <= cd_size; i++) {
+            int nlen = rd16(cd + p + 28), clen = 0, k, v;
+            char cname[256];
+            unsigned char *cls;
+            if (rd32(cd + p) != 0x02014b50) break;
+            if (nlen > 6 && nlen < (int)sizeof(cname) &&
+                strncmp((const char *)cd + p + 46 + nlen - 6, ".class", 6) == 0) {
+                memcpy(cname, cd + p + 46, (size_t)nlen);
+                cname[nlen] = 0;
+                cls = jar_entry(jar, cname, &clen);
+                for (k = 0; cls && k + 2 < clen; k++) {
+                    if (cls[k] != 0x11) continue;  /* sipush */
+                    v = (cls[k + 1] << 8) | cls[k + 2];
+                    for (r = 0; r < nv; r++)
+                        if (vals[r] == v) cnt[r]++;
+                }
+                free(cls);
+            }
+            p += 46 + nlen + rd16(cd + p + 30) + rd16(cd + p + 32);
+        }
+        for (r = 0; r < (int)(sizeof(rules) / sizeof(rules[0])); r++) {
+            int a = 0, b = 0, k, s;
+            for (k = 0; k < nv; k++) {
+                if (vals[k] == rules[r][2]) a = cnt[k];
+                if (vals[k] == rules[r][3]) b = cnt[k];
+            }
+            s = a < b ? a : b;
+            if (s >= 8 && s > score) {
+                score = s;
+                *w = rules[r][0];
+                *h = rules[r][1];
+            }
+        }
+        if (score)
+            vj_log("cfg: resolución deducida del bytecode: %dx%d (%d usos)",
+                   *w, *h, score);
+        best = score;
+    }
     free(cd);
     fclose(f);
     return best > 0;
