@@ -219,6 +219,12 @@
   - **Pendiente de HW (igual que el #17):** falta subir `_prebuilt/data/lib/*.png` actualizado por FTP y confirmar visualmente en consola que el AMS carga los PNG sueltos y no un `skin.bin` viejo — si el próximo log de consola muestra la paleta 2006 sin cambios pese a los PNG nuevos, la hipótesis de "`skin.bin` no se usa" queda refutada y hay que investigar el romizado real.
   - **Sin commitear:** todo lo de esta sesión queda en el árbol de trabajo junto con los fixes #16/#17 de la sesión 22, a la espera de la verificación en consola (mismo criterio que el resto del proyecto: un commit por bug/feature confirmado).
 
+## Sesión 42 — crash de la pantalla de carga: pila desbordada (2026-10-30, dump HW 042)
+- **Síntoma:** crash al pulsar X; el bringup corta tras `START propio` (antes de `JavaTask() >>`), o sea en `launcher_loading_start`.
+- **Dump `psp2core-1793381412` (toolkit local, ELF 13:27 < dump 13:30):** hilo `vj_loading`, Data abort en `push {r4,r5,lr}` de `__aeabi_ul2d` llamado desde `draw_loading` (launcher.c) = desbordamiento de pila.
+- **Causa (mía):** `draw_loading` declaraba `scene bg;` solo para pasar el nº de frame al fondo; `scene` lleva `vj_game[64]` -> `sub sp, #0xac00` (44 160 B) en un hilo de 32 KB.
+- **Fix:** `draw_background(int frame)`. Verificado en el ELF: `draw_loading` reserva 104 B. `eboot.bin` subido por FTP (tamaño verificado). Pendiente de HW: la medición del log/FPS de la sesión 41 sigue sin datos.
+
 ## Sesión 41 — el juego ARRANCA (#28 verificado) pero a ~1 FPS en negro (2026-10-30, logs HW 041)
 - **Hito:** `runMidlet 2 GloftSOFD` ya no muere: el VM arranca SoD, pinta frames (5-10 por 10 s) y el MIDlet corre. #28 verificado en HW.
 - **Síntoma nuevo:** pantalla negra a 0-1 FPS. HB: el hilo de la JVM usa ~0,4 s de CPU cada 10 s (bloqueado ~96 %, `wait=0x10`) mientras `jvmlog` sube ~35 llamadas/s; el fichero solo tiene 98 líneas/6 KB -> casi todas las llamadas son cadenas VACÍAS, y cada una hacía `sceIoOpen+Write+Close` síncrono sobre la memory card. Hipótesis principal (no confirmada): el log ahoga el hilo del VM. `ResourceInputStream(javax/microedition/lcdui/logo.png)` x65 = repintados de MIDP sin Displayable propio del juego aún.

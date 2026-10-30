@@ -509,12 +509,12 @@ static int name_hash(const char *s) {
     return (int)(h % 5);
 }
 
-static void draw_background(const scene *sc) {
+static void draw_background(int frame) {
     int i;
     fill_vgrad(0, 0, SCR_W, SCR_H, C_BG_TOP, C_BG_BOT);
     /* burbujas a la deriva (guiño al LiveArea) */
     for (i = 0; i < 9; i++) {
-        float t = sc->frame * 0.004f + i * 1.7f;
+        float t = frame * 0.004f + i * 1.7f;
         float x = 80 + (i * 113) % 860 + sinf(t) * 40;
         float y = 120 + (i * 197) % 380 + cosf(t * 0.8f) * 30;
         float r = 50 + (i * 37) % 110;
@@ -729,7 +729,7 @@ static void draw_scene(const scene *sc) {
     int i;
     vita2d_start_drawing();
     vita2d_clear_screen();
-    draw_background(sc);
+    draw_background(sc->frame);
     draw_header(sc);
     /* la seleccionada al final, por encima de sus vecinas */
     for (i = 0; i <= sc->n; i++)
@@ -749,7 +749,7 @@ static void draw_launching(const scene *sc, const char *name, float fade) {
     int i;
     vita2d_start_drawing();
     vita2d_clear_screen();
-    draw_background(sc);
+    draw_background(sc->frame);
     vita2d_draw_rectangle(0, 0, SCR_W, SCR_H,
                           with_alpha(C_BG_BOT, (int)(255 * fade)));
     text((SCR_W - text_w(1.3f, name)) / 2.0f, 300, 1.3f, C_WHITE, name);
@@ -918,18 +918,17 @@ extern volatile unsigned long vita_jvmlog_bytes;
 #define LOADING_MAX_US (120ull * 1000 * 1000)  /* luego: pantalla real */
 
 static void draw_loading(float fade) {
-    scene bg;
     float t = (float)((sceKernelGetProcessTimeWide() - ld.t0) / 1000000.0);
     float cx = SCR_W / 2.0f, tile = 132, ty = 124;
     int hue = name_hash(ld.game.name), i;
     char buf[96];
     const char *status;
 
-    memset(&bg, 0, sizeof(bg));
-    bg.frame = ld.frame;
+    /* OJO (HW 042): nada de `scene` en la pila aquí — son ~44 KB (64
+     * vj_game) y este hilo tiene 32 KB: desbordaba en el primer frame. */
     vita2d_start_drawing();
     vita2d_clear_screen();
-    draw_background(&bg);
+    draw_background(ld.frame);
     /* icono del juego con halo que respira */
     {
         float glow = 10 + sinf(ld.frame * 0.06f) * 4;
