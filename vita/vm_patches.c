@@ -97,3 +97,15 @@ void *__wrap__ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop(void *containing_cl
 int vitaj2me_clinit_skip_count(void) {
     return vitaj2me_clinit_skips;
 }
+
+/* Bug real #28 (HW 040): MIDP arma el classpath de una suite como
+ * <jar> + storageGetPathSeparator() + "classes.zip", y ese separador sale
+ * de pcsl_file_getpathseparator() = ':' (pcsl/file/javacall). Pero CLDC
+ * lo parte con OsFile_path_separator_char = ';' (OsFile_javacall.hpp), así
+ * que "file:///games/SoD.jar:classes.zip" era UNA sola entrada inexistente
+ * y el bootstrap moría con "class not found: java/lang/Object". El AMS
+ * nunca lo notó: su suite interna no tiene jar y no lleva separador.
+ * Además ':' chocaría con "file:" y "ux0:". Se alinea con CLDC. */
+unsigned short __wrap_pcsl_file_getpathseparator(void) {
+    return (unsigned short)';';
+}

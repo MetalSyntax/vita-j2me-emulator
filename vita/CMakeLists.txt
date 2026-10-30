@@ -58,8 +58,12 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--pic-veneer")
 # mangled de C++ (phoneME prefija las clases con JVM via macros).
 #   #15: TaskMirror::clinit_list_remove(Oop*) derefiere NULL si la clase
 #        no esta en la clinit list.
+#   #28: pcsl_file_getpathseparator() devuelve ':' pero CLDC parte el
+#        classpath por ';' (OsFile_javacall.hpp): "<jar>:classes.zip" era
+#        UNA entrada -> "class not found: java/lang/Object" (HW 040).
 set(VITAJ2ME_VM_WRAPS
   _ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop
+  pcsl_file_getpathseparator
 )
 foreach(sym ${VITAJ2ME_VM_WRAPS})
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--wrap=${sym}")
