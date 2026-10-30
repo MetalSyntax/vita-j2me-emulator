@@ -30,9 +30,48 @@ add_definitions(-D_GNU_SOURCE)
 # flags ARM Vita: Cortex-A9, softfp (igual que el resto del proyecto)
 # -marm: el ASM inline A32 de midp (gxj_graphics_asm.c) lo exige
 # (vitasdk compila en Thumb-2 por defecto).
+#
+# -Wl,--pic-veneer (Bug real #14 -- SIN esto el emulador no arranca):
+# libmidp.a es el unico .a en ARM; cldc/javacall/pcsl/newlib son Thumb.
+# Cuando una funcion ARM hace un TAIL CALL (`b`) a una Thumb, A32 no tiene
+# "branch with exchange" PC-relativo, asi que ld interpone un veneer
+# .glue_7 con direccion ABSOLUTA:
+#     ldr pc, [pc, #-4] ; .word <destino>
+# Ese .word necesitaria una R_ARM_ABS32, pero ld NO emite relocaciones para
+# los stubs que el mismo genera -- ni con -Wl,-q (verificado: las relocs de
+# .rel.text cortan en 0x81172de0 y los veneers arrancan en 0x81172df0). Sin
+# reloc, vita-elf-create no tiene nada que convertir y el .word queda
+# congelado en la direccion de LINK; la Vita carga el modulo con delta
+# (+0x4000 en el build 019) y el salto cae fuera del modulo -> Prefetch
+# Abort. Habia 68 de estos tail calls, todos bombas de tiempo; el primero
+# que se pisa al arrancar es JVMSPI_SetSystemProperty -> setSystemProperty.
+# --pic-veneer fuerza veneers PC-relativos, que no necesitan relocacion.
+# (Los veneers Thumb->ARM, `bx pc; b <destino>`, ya eran PC-relativos: por
+# eso el mismo binario funcionaba en todo lo demas.)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -O2 -g -mfloat-abi=softfp -marm -fno-strict-aliasing")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--pic-veneer")
 
-add_executable(${PROJECT_NAME} main.c support.c)
+# Parches a la JVM interpuestos en tiempo de link (ver vita/vm_patches.c):
+# recompilar libcldc_vm_r.a/libmidp.a esta bloqueado por el SIGSEGV de
+# romgen.exe (Bug real #14), asi que los fixes de CLDC se aplican con
+# --wrap hasta que ese bloqueador se destrabe. Los simbolos son los
+# mangled de C++ (phoneME prefija las clases con JVM via macros).
+#   #15: TaskMirror::clinit_list_remove(Oop*) derefiere NULL si la clase
+#        no esta en la clinit list.
+set(VITAJ2ME_VM_WRAPS
+  _ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop
+)
+foreach(sym ${VITAJ2ME_VM_WRAPS})
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--wrap=${sym}")
+endforeach()
+
+add_executable(${PROJECT_NAME} main.c support.c vm_patches.c)
+
+# vm_patches.c va en Thumb (el resto del frontend es -marm): los call
+# sites que redirige patch_vm_calls.py son `bl` Thumb dentro de CLDC, y
+# manteniendo el wrapper en Thumb el parche es un simple recalculo de
+# desplazamiento, sin tener que convertir bl->blx ni cambiar de modo.
+set_source_files_properties(vm_patches.c PROPERTIES COMPILE_OPTIONS "-mthumb")
 
 # Headers javacall (logging, generados por el build de libjavacall).
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -74,6 +113,18 @@ target_link_libraries(${PROJECT_NAME}
   SceAppMgr_stub
   SceLibKernel_stub
 )
+
+# Parche post-link: redirige al wrapper de vm_patches.c las llamadas que
+# --wrap no puede alcanzar (merged sources de CLDC, sin relocacion). Se
+# ejecuta sobre el ELF recien enlazado, ANTES de que vita_create_self lo
+# convierta a .velf/eboot.bin. El script verifica su propio trabajo y
+# devuelve error si no encuentra exactamente los call sites esperados.
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E env "VITASDK=$ENV{VITASDK}"
+          python3 "${CMAKE_SOURCE_DIR}/patch_vm_calls.py"
+          "$<TARGET_FILE:${PROJECT_NAME}>"
+  COMMENT "Parcheando llamadas internas de la JVM (vm_patches.c)"
+  VERBATIM)
 
 vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)
 # NOTA: vita_create_vpk(FILE ...) no tolera espacios en rutas absolutas

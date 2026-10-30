@@ -26,6 +26,15 @@ red con el servidor FTP de VitaShell activo.
 - **Subir solo eboot.bin**: sobrescribe el `eboot.bin` ya instalado en
   `ux0:app/VITAJ2ME0/`, sin pasar por el instalador — mucho más rápido
   cuando solo cambió el código nativo y el .vpk ya está instalado.
+- **Subir datos del home J2ME (`classes.zip` + `.jar`)**: sube
+  `_prebuilt/lib/classes.zip` a `ux0:data/vitaj2me/` y cualquier
+  `.jar`/`.jad` de la raíz del repo o de `games/` a
+  `ux0:data/vitaj2me/games/`. Sin `classes.zip` en la consola la JVM no
+  encuentra ninguna clase del AMS y el bootstrap muere mucho más
+  adelante, con un síntoma que no tiene nada que ver — pasó dos sesiones
+  seguidas (ver Bug real #16). El frontend loguea un inventario del home
+  al arrancar, así que el `bringup-NNN.log` siguiente confirma si quedó
+  bien.
 - **Descargar log + crash dump más recientes**: baja lo último de
   `ux0:data/vitaj2me/logs/` (`bringup-NNN.log`/`jvm-NNN.log`; también
   busca en `ux0:data/vitaj2me/` por si quedan logs sueltos de antes de

@@ -75,13 +75,22 @@ void JVMSPI_SetSystemProperty(char *property_name, char *property_value) {
   // el terminador nulo) -- typo de 2006 presente en TODAS las plataformas
   // phoneME. Reserva 2 bytes menos de los necesarios y jvm_strcpy() de
   // abajo escribe el string completo igual: heap overflow real en cada
-  // propiedad de sistema seteada. Se hizo visible en Vita porque el fix
-  // del Bug real #12 agrego mas argv (-classpathext classes.zip) que
-  // pasan por JVMArguments::parse_one_arg -> esta funcion, corrompiendo
-  // el bookkeeping del allocator PCSL lo suficiente para crashear mas
-  // adelante con un Prefetch Abort a una direccion basura (jvm-0XX.log,
-  // dump psp2core-1788486283-...: PC=0x81003b18 fuera de cualquier
-  // segmento conocido, LR justo despues de esta misma funcion).
+  // propiedad de sistema seteada. El fix es correcto y vale la pena.
+  //
+  // OJO (correccion, sesion 19): la version original de este comentario
+  // atribuia a este typo el Prefetch Abort con PC=0x81003b18 (dumps
+  // psp2core-1788486283 / -1788493420 / -1788732158). Era FALSO por dos
+  // motivos:
+  //   1. Esta JVMSPI_SetSystemProperty es CODIGO MUERTO en el build de
+  //      Vita: gana la implementacion de MIDP (midp_run.c), que es la que
+  //      aparece en la pila de todos esos dumps.
+  //   2. 0x81003b18 no era "una direccion basura": es exactamente el
+  //      simbolo setSystemProperty (midp_properties_static.c) en el ELF,
+  //      alcanzado por un veneer de interworking ARM->Thumb generado por
+  //      el linker con direccion ABSOLUTA y sin relocacion (ld no emite
+  //      relocs para sus propios stubs, ni con -Wl,-q). Ver Bug real #14
+  //      en port_progress.md; el fix real es -Wl,--pic-veneer en
+  //      vita/CMakeLists.txt.
   prop->name  = (char*)OsMemory_allocate(jvm_strlen(property_name) + 1);
   prop->value = (char*)OsMemory_allocate(jvm_strlen(property_value) + 1);
   jvm_strcpy(prop->name,  property_name);

@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 #include "javacall_file.h"
+#include "javacall_fileconnection.h"
 #include "javacall_memory.h"
 
 #include <sys/types.h>
@@ -39,7 +40,67 @@ char* javacall_UNICODEsToUtf8(const javacall_utf16* fileName, int fileNameLen) {
     }
     return &result[0];
 }
- 
+
+/* Traduce "file:///<raiz>/<resto>" a path nativo ("ux0:/data/...").
+ *
+ * Bug real #21 (jvm-027/028.log): el instalador MIDP (FileInstaller,
+ * no recompilable) pasa la URL tal cual a storage_open -> pcsl_file_open
+ * -> javacall_file_open. En PSP eso funcionaba porque las URLs del
+ * DiscoveryApp eran rutas nativas ("ms0:/...") sin esquema; acá el
+ * frontend manda "file:///games/SoD.jar", newlib lo interpreta como
+ * dispositivo "file:" y falla con ENODEV ("storage_open(): No such
+ * device"). La traducción vive acá (capa javacall, recompilable) y no
+ * en MIDP/PCSL: vale para storage, RMS, cachés y JSR-75 interno a la
+ * vez. Los paths sin esquema pasan intactos.
+ * Devuelve 1 y rellena out si tradujo; 0 si no (usar in tal cual). */
+static int resolve_file_url(const char *in, char *out, int outsz) {
+    static const char scheme[] = "file:///";
+    /* static: evita 2KB en la pila de hilos chicos (key_thread 4KB). */
+    static javacall_utf16 root16[32];
+    static javacall_utf16 nat16[JAVACALL_MAX_ROOT_PATH_LENGTH];
+    const char *p;
+    const char *slash;
+    int rootlen, i, restlen, natlen;
+
+    if (strncmp(in, scheme, sizeof(scheme) - 1) != 0) {
+        return 0;
+    }
+    p = in + sizeof(scheme) - 1; /* "<raiz>/<resto>" */
+    slash = strchr(p, '/');
+    if (!slash || slash == p || slash[1] == '\0') {
+        return 0;
+    }
+    rootlen = (int)(slash - p) + 1; /* con '/' final ("games/") */
+    if (rootlen + 1 > (int)(sizeof(root16) / sizeof(root16[0]))) {
+        return 0;
+    }
+    for (i = 0; i < rootlen; i++) {
+        root16[i] = (javacall_utf16)(unsigned char)p[i];
+    }
+    root16[rootlen] = 0;
+    if (javacall_fileconnection_get_path_for_root(
+            root16, rootlen, nat16,
+            (int)(sizeof(nat16) / sizeof(nat16[0]))) != JAVACALL_OK) {
+        return 0;
+    }
+    for (natlen = 0; nat16[natlen] && natlen < JAVACALL_MAX_ROOT_PATH_LENGTH;
+         natlen++) {
+        /* raíz vacía = no traducir */
+    }
+    if (natlen == 0) {
+        return 0;
+    }
+    restlen = (int)strlen(slash + 1);
+    if (natlen + restlen + 1 > outsz) {
+        return 0;
+    }
+    for (i = 0; i < natlen; i++) {
+        out[i] = (char)nat16[i]; /* raíces siempre ASCII */
+    }
+    memcpy(out + natlen, slash + 1, (size_t)restlen + 1);
+    return 1;
+}
+
 /**
  * Initializes the File System
  * @return <tt>JAVACALL_OK</tt> on success, <tt>JAVACALL_FAIL</tt> or negative value on error
@@ -79,13 +140,27 @@ javacall_result javacall_file_finalize(void) {
  */
 javacall_result javacall_file_open(const javacall_utf16 * unicodeFileName, int fileNameLen, int flags, /*OUT*/ javacall_handle * handle) {
 
-    char* pszOsFilename = javacall_UNICODEsToUtf8(unicodeFileName, fileNameLen);
+    char* pszRaw = javacall_UNICODEsToUtf8(unicodeFileName, fileNameLen);
+    /* Local: UNICODEsToUtf8 devuelve un estático reutilizable. */
+    char pszNative[MAX_FILE_NAME_LEN+1];
+    const char *pszOsFilename;
 
-    if (pszOsFilename == NULL) {
+    if (pszRaw == NULL) {
 #ifdef DEBUG_JAVACALL_FILE
         javacall_printf("javacall_file_open(): path name too long\n");
 #endif
        return JAVACALL_FAIL;
+    }
+
+    strncpy(pszNative, pszRaw, sizeof(pszNative) - 1);
+    pszNative[sizeof(pszNative) - 1] = '\0';
+    {
+        char resolved[MAX_FILE_NAME_LEN+1];
+        if (resolve_file_url(pszNative, resolved, sizeof(resolved))) {
+            strncpy(pszNative, resolved, sizeof(pszNative) - 1);
+            pszNative[sizeof(pszNative) - 1] = '\0';
+        }
+        pszOsFilename = pszNative;
     }
 
 #ifdef DEBUG_JAVACALL_FILE
@@ -184,10 +259,21 @@ long javacall_file_write(javacall_handle handle, const unsigned char *buf, long 
  * @return JAVACALL_OK on success, <tt>JAVACALL_FAIL</tt> or negative value otherwise
  */
 javacall_result javacall_file_delete(const javacall_utf16 * unicodeFileName, int fileNameLen) {
-    char* pszOsFilename = javacall_UNICODEsToUtf8(unicodeFileName, fileNameLen);
+    char* pszRaw = javacall_UNICODEsToUtf8(unicodeFileName, fileNameLen);
+    char pszNative[MAX_FILE_NAME_LEN+1];
+    char resolved[MAX_FILE_NAME_LEN+1];
+    const char *pszOsFilename;
 
-    if (pszOsFilename == NULL) {
+    if (pszRaw == NULL) {
     	return JAVACALL_FAIL;
+    }
+
+    strncpy(pszNative, pszRaw, sizeof(pszNative) - 1);
+    pszNative[sizeof(pszNative) - 1] = '\0';
+    pszOsFilename = pszNative;
+    if (resolve_file_url(pszNative, resolved, sizeof(resolved))) {
+        strncpy(pszNative, resolved, sizeof(pszNative) - 1);
+        pszNative[sizeof(pszNative) - 1] = '\0';
     }
 
     int status = unlink(pszOsFilename);
@@ -333,13 +419,24 @@ javacall_int64 javacall_file_sizeof(const javacall_utf16 * fileName, int fileNam
  */
 javacall_result javacall_file_exist(const javacall_utf16 * fileName, int fileNameLen) {
 
-    char* szOsFilename=javacall_UNICODEsToUtf8(fileName, fileNameLen);
+    char* szRaw=javacall_UNICODEsToUtf8(fileName, fileNameLen);
+    char szNative[MAX_FILE_NAME_LEN+1];
+    char resolved[MAX_FILE_NAME_LEN+1];
+    const char *szOsFilename;
     int attrs;
     struct stat st;
 
-    if(!szOsFilename) {
+    if(!szRaw) {
         javacall_print("Error: javacall_file_exist(), path name is too long\n");
         return JAVACALL_FAIL;
+    }
+
+    strncpy(szNative, szRaw, sizeof(szNative) - 1);
+    szNative[sizeof(szNative) - 1] = '\0';
+    szOsFilename = szNative;
+    if (resolve_file_url(szNative, resolved, sizeof(resolved))) {
+        strncpy(szNative, resolved, sizeof(szNative) - 1);
+        szNative[sizeof(szNative) - 1] = '\0';
     }
 
     attrs = stat(szOsFilename, &st);

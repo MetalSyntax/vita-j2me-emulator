@@ -50,11 +50,11 @@
 
   <integer
         Key="SCREEN_COLOR_BG"
-      Value="0xFFFFFF"/>
+      Value="0xF5F1E8"/>
 
   <integer
         Key="SCREEN_COLOR_HS_BG"
-      Value="0xFFFFFF"/>
+      Value="0xF5F1E8"/>
 
   <integer
         Key="SCREEN_COLOR_FG"
@@ -70,7 +70,7 @@
 
   <integer
         Key="SCREEN_COLOR_BORDER"
-      Value="0x000000"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="SCREEN_COLOR_BORDER_HL"
@@ -149,11 +149,11 @@
 
   <integer
         Key="SCROLL_COLOR_BG"
-      Value="0xFFFFFF"/>
+      Value="0xF5F1E8"/>
 
   <integer
         Key="SCROLL_COLOR_FG"
-      Value="0xCEDFEF"/>
+      Value="0xDCE6EF"/>
 
   <integer
         Key="SCROLL_COLOR_FRAME"
@@ -191,7 +191,7 @@
 
   <integer
         Key="SCROLL_COLOR_AU_BG"
-      Value="0x000000"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="SCROLL_COLOR_AU_FG"
@@ -237,11 +237,11 @@
 
   <integer
         Key="SOFTBTN_COLOR_FG_SHD"
-      Value="0x000000"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="SOFTBTN_COLOR_BG"
-      Value="0x264DB6"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="SOFTBTN_COLOR_MU_FG"
@@ -249,11 +249,11 @@
 
   <integer
         Key="SOFTBTN_COLOR_MU_FG_SHD"
-      Value="0x000000"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="SOFTBTN_COLOR_MU_BG"
-      Value="0xFF9933"/>
+      Value="0xE8830C"/>
 
   <integer
         Key="SOFTBTN_COLOR_AU_FG"
@@ -261,11 +261,11 @@
 
   <integer
         Key="SOFTBTN_COLOR_AU_FG_SHD"
-      Value="0x000000"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="SOFTBTN_COLOR_AU_BG"
-      Value="0xF06409"/>
+      Value="0xF2A33D"/>
 
   <font
         Key="SOFTBTN_FONT"
@@ -327,7 +327,7 @@
 
   <integer
         Key="TICKER_COLOR_BG"
-      Value="0x96DBDB"/>
+      Value="0xDCE6EF"/>
 
   <integer
         Key="TICKER_COLOR_FG"
@@ -335,7 +335,7 @@
 
   <integer
         Key="TICKER_COLOR_FG_SHD"
-      Value="0xCCCCFF"/>
+      Value="0xC7D6E3"/>
 
   <font
         Key="TICKER_FONT"
@@ -355,11 +355,11 @@
 
   <integer
         Key="INPUT_MODE_COLOR_BG"
-      Value="0xA3E2F8"/>
+      Value="0xFBE9C6"/>
 
   <integer
         Key="INPUT_MODE_COLOR_BDR"
-      Value="0x336699"/>
+      Value="0x2F5C86"/>
 
   <integer
         Key="INPUT_MODE_COLOR_FG"
@@ -389,7 +389,7 @@
 
   <integer
         Key="PTI_COLOR_BG"
-      Value="0xA3E2F8"/>
+      Value="0xFBE9C6"/>
 
   <integer
         Key="PTI_COLOR_FG"
@@ -405,7 +405,7 @@
 
   <integer
         Key="PTI_COLOR_BDR"
-      Value="0x336699"/>
+      Value="0x2F5C86"/>
 
   <font
         Key="PTI_FONT"
@@ -449,11 +449,11 @@
 
   <integer
         Key="TITLE_COLOR_FG_SHD"
-      Value="0x000000"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="TITLE_COLOR_BG"
-      Value="0x1F3FB1"/>
+      Value="0x0B2A4A"/>
 
   <font
         Key="TITLE_FONT"
@@ -657,7 +657,7 @@
 
   <integer
         Key="CHOICE_COLOR_BG"
-      Value="0xCCFFFF"/>
+      Value="0xFBE9C6"/>
 
   <integer
         Key="CHOICE_COLOR_BRDR"
@@ -665,7 +665,7 @@
 
   <integer
         Key="CHOICE_COLOR_BRDR_SHD"
-      Value="0x8db0d9"/>
+      Value="0xC7D6E3"/>
 
   <integer
         Key="CHOICE_COLOR_SCROLL"
@@ -740,27 +740,27 @@
 
   <integer
         Key="DATEEDITOR_COLOR_BG"
-      Value="0xFFEDA0"/>
+      Value="0xFFF3D9"/>
 
   <integer
         Key="DATEEDITOR_COLOR_POPUPS_BG"
-      Value="0xF4DDD7"/>
+      Value="0xFBE9C6"/>
 
   <integer
         Key="DATEEDITOR_COLOR_BRDR"
-      Value="0x0D0D0A"/>
+      Value="0x0B1622"/>
 
   <integer
         Key="DATEEDITOR_COLOR_TRAV_IND"
-      Value="0xFF7012"/>
+      Value="0xFFCC33"/>
 
   <integer
         Key="DATEEDITOR_COLOR_CLK_LT"
-      Value="0xFFFFFF"/>
+      Value="0xF5F1E8"/>
 
   <integer
         Key="DATEEDITOR_COLOR_CLK_DK"
-      Value="0x9D7E4F"/>
+      Value="0xB8863B"/>
 
   <font
         Key="DATEEDITOR_FONT_POPUPS"
@@ -835,15 +835,15 @@
 
   <integer
         Key="DATEFIELD_COLOR_BG"
-      Value="0xC9E8FF"/>
+      Value="0xFBE9C6"/>
 
   <integer
         Key="DATEFIELD_COLOR_BRDR"
-      Value="0x0D3964"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="DATEFIELD_COLOR_BRDR_LT"
-      Value="0x8DB0D9"/>
+      Value="0xC7D6E3"/>
 
   <integer
         Key="DATEFIELD_COLOR_BRDR_DK"
@@ -851,7 +851,7 @@
 
   <integer
         Key="DATEFIELD_COLOR_BRDR_SHD"
-      Value="0x8db0d9"/>
+      Value="0xC7D6E3"/>
 
   <composite_image
         Key="DATEFIELD_IMAGE_BG"
@@ -964,15 +964,15 @@
 
   <integer
         Key="IMAGEITEM_COLOR_BG_BTN"
-      Value="0xff0000"/>
+      Value="0xD64545"/>
 
   <integer
         Key="IMAGEITEM_COLOR_BORDER_LT"
-      Value="0x606060"/>
+      Value="0x738496"/>
 
   <integer
         Key="IMAGEITEM_COLOR_BORDER_DK"
-      Value="0xAFAFAF"/>
+      Value="0x3D5266"/>
 
   <integer
         Key="IMAGEITEM_PAD_LNK_H"
@@ -1064,7 +1064,7 @@
 
   <integer
         Key="MENU_COLOR_BG"
-      Value="0xFFEAA1"/>
+      Value="0xFFF3D9"/>
 
   <integer
         Key="MENU_COLOR_BG_SEL"
@@ -1199,11 +1199,11 @@
 
   <integer
         Key="STRINGITEM_COLOR_FG_LNK"
-      Value="0x003399"/>
+      Value="0x1657A6"/>
 
   <integer
         Key="STRINGITEM_COLOR_FG_LNK_FOC"
-      Value="0x003399"/>
+      Value="0x1657A6"/>
 
   <integer
         Key="STRINGITEM_COLOR_BG_LNK_FOC"
@@ -1211,19 +1211,19 @@
 
   <integer
         Key="STRINGITEM_COLOR_FG_BTN"
-      Value="0x000000"/>
+      Value="0xFFFFFF"/>
 
   <integer
         Key="STRINGITEM_COLOR_BG_BTN"
-      Value="0x7199E1"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="STRINGITEM_COLOR_BORDER_LT"
-      Value="0x606060"/>
+      Value="0x738496"/>
 
   <integer
         Key="STRINGITEM_COLOR_BORDER_DK"
-      Value="0xAFAFAF"/>
+      Value="0x3D5266"/>
 
   <font
         Key="STRINGITEM_FONT"
@@ -1278,31 +1278,31 @@
 
   <integer
         Key="TEXTFIELD_COLOR_BG"
-      Value="0xFFFFFF"/>
+      Value="0xF5F1E8"/>
 
   <integer
         Key="TEXTFIELD_COLOR_BRDR"
-      Value="0x000000"/>
+      Value="0x0B2A4A"/>
 
   <integer
         Key="TEXTFIELD_COLOR_BRDR_SHD"
-      Value="0x8db0d9"/>
+      Value="0xC7D6E3"/>
 
   <integer
         Key="TEXTFIELD_COLOR_FG_UE"
-      Value="0x5d5d5d"/>
+      Value="0x6B6558"/>
 
   <integer
         Key="TEXTFIELD_COLOR_BG_UE"
-      Value="0xc2c2c2"/>
+      Value="0xE3DED2"/>
 
   <integer
         Key="TEXTFIELD_COLOR_BRDR_UE"
-      Value="0x000000"/>
+      Value="0x9C9484"/>
 
   <integer
         Key="TEXTFIELD_COLOR_BRDR_SHD_UE"
-      Value="0xc2c2c2"/>
+      Value="0xE3DED2"/>
 
   <composite_image
         Key="TEXTFIELD_IMAGE_BG"

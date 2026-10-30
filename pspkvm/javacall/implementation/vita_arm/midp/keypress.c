@@ -20,12 +20,17 @@
 #include <javacall_keymap.h>
 #include <javacall_devemu.h>
 
+#include <stdio.h> /* snprintf para la traza VITAJ2ME-KEY (Bug #17) */
+
 #include <psp2/ctrl.h>
 #include <psp2/kernel/threadmgr.h>
 
 extern int suspend_key_input;
 static int key_thread_id = -1;
 static int done = 0;
+
+/* Transiciones mapeadas vistas (watchdog del frontend). */
+volatile unsigned long vita_key_count = 0;
 
 #define VITA_CTRL_ANALOG_LEFT 	0x10000000
 #define VITA_CTRL_ANALOG_RIGHT 	0x20000000
@@ -67,6 +72,20 @@ static int KeyThread(SceSize args, void *argp)
 		//pspDebugScreenSetXY(0, 2);
 
     sceCtrlPeekBufferPositive(0, &pad, 1);
+
+	/* Cadencia de muestreo (Bug real #17): en PSP este mismo hilo giraba
+	 * sin delay porque sceCtrlReadBufferPositive() lee del buffer que el
+	 * sistema refresca cada sceCtrlSetSamplingCycle(25) -> el loop efectivo
+	 * iba a ~40 Hz y los REPEAT_THRESHOLD (20/5) daban ~500 ms de retardo
+	 * inicial y ~125 ms de repeticion. En Vita no existe SetSamplingCycle
+	 * y Peek lee el HW en vivo: sin pausa el loop gira a MHz, 'hold' llega
+	 * a 20 en microsegundos y cada pulsacion inunda la JVM de KEYREPEATED
+	 * (cruceta erratica; en un menu la cascada de repeticiones cae en
+	 * cascada hasta activar Salir -> cierre limpio como el de la sesion 21).
+	 * 25 ms = ~40 Hz, paridad con PSP. Va ANTES del chequeo de 'suspend'
+	 * para no quemar CPU en busy-loop cuando la entrada esta suspendida. */
+	sceKernelDelayThread(25 * 1000);
+
 		if (suspend_key_input) {
 			continue;
 		}
@@ -242,12 +261,30 @@ static int KeyThread(SceSize args, void *argp)
 		    	if (pressed!= lastPressed) {
 			    	if (pressed) {
 			    		javanotify_key_event(javaKey, JAVACALL_KEYPRESSED);
+			    		vita_key_count++;
 			    		lastPressedJavakey = javaKey;
-				    //printf("key %d pressed\n", keymap[i].javaKey);
+					{
+						/* Traza Bug #17 (solo transiciones, no repeats):
+						 * una pulsacion debe loguear un unico par
+						 * press/release. Si el delay de muestreo se pierde,
+						 * aqui se veria la inundacion de repeats. */
+						char keydbg[64];
+						snprintf(keydbg, sizeof(keydbg),
+							"VITAJ2ME-KEY: press %d (native 0x%08x)\n",
+							javaKey, vitaKey);
+						javacall_print(keydbg);
+					}
 				} else {
 				    	javanotify_key_event(javaKey, JAVACALL_KEYRELEASED);
+				    	vita_key_count++;
 				    	lastPressedJavakey = 0;
-				   	 //printf("key %d released\n", keymap[i].javaKey);
+					{
+						char keydbg[64];
+						snprintf(keydbg, sizeof(keydbg),
+							"VITAJ2ME-KEY: release %d (native 0x%08x)\n",
+							javaKey, vitaKey);
+						javacall_print(keydbg);
+					}
 				}
 			}
 		    }
@@ -276,7 +313,11 @@ javacall_result javacall_key_init() {
 				     0x40, 0x1000, 0, 0, 0);
     if (thid >= 0) {
     	 sceKernelStartThread(thid, 0, 0);
-    	 javacall_print("keythread started\n");
+    	 /* Fingerprint del fix #17: si el jvm.log trae esta línea, la
+    	  * libjavacall.a instalada SÍ muestrea a 25 ms y loguea
+    	  * VITAJ2ME-KEY por transición. Sin ella (VPK viejo), la
+    	  * cruceta inunda de repeats y ningún menú se puede usar. */
+    	 javacall_print("keythread started (muestreo 25ms + traza VITAJ2ME-KEY)\n");
     	 key_thread_id = thid;
         return JAVACALL_OK;
     } else {

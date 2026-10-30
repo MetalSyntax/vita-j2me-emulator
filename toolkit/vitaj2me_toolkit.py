@@ -91,6 +91,67 @@ def action_upload_vpk(cfg):
         ftp_ops.quit_(ftp)
 
 
+def action_upload_home_data(cfg):
+    """Sube al home J2ME de la consola lo que la JVM necesita para arrancar.
+
+    Sin `classes.zip` en `ux0:data/vitaj2me/` la JVM no encuentra NINGUNA
+    clase del AMS y el bootstrap muere mucho mas adelante, con un sintoma
+    que no tiene nada que ver (camino de clases "fake"). Hasta ahora habia
+    que copiarla a mano con VitaShell; esta opcion cierra el ciclo dentro
+    del toolkit. Tambien sube un .jar/.jad a games/ para poder probar la
+    deteccion de MIDlets desde el AMS.
+    """
+    home = cfg["vita_home_dir"]
+    root = cfgmod.PROJECT_DIR
+    classes = root / "_prebuilt" / "lib" / "classes.zip"
+
+    items = []
+    if classes.exists():
+        items.append((classes, home,
+                      f"classes.zip ({classes.stat().st_size / 1024:.0f} KB)"))
+    else:
+        print(f"{C.RED}No existe {classes} — falta compilar la Fase 2b.{C.RESET}")
+
+    # .jar/.jad sueltos en la raiz del repo o en games/ (para probar la
+    # deteccion de MIDlets desde el AMS).
+    seen = set()
+    for pattern_dir in (root, root / "games"):
+        if not pattern_dir.is_dir():
+            continue
+        for j in sorted(pattern_dir.glob("*.jar")) + sorted(pattern_dir.glob("*.jad")):
+            if j.name in seen:
+                continue
+            seen.add(j.name)
+            items.append((j, f"{home}/games",
+                          f"{j.name} ({j.stat().st_size / 1024:.0f} KB)"))
+
+    if not items:
+        print("Nada para subir.")
+        return
+
+    print("Se va a subir:")
+    for _local, dest, label in items:
+        print(f"  {label}  ->  {dest}/")
+    if not tui.confirm("¿Continuar?", default=True):
+        print("Cancelado.")
+        return
+
+    ftp = ftp_ops.connect_with_retry(cfg)
+    if not ftp:
+        return
+    try:
+        for local, dest, _label in items:
+            print(f"\n{local.name}:")
+            ftp_ops.upload_file(ftp, local, dest)
+        print(f"\n{C.GREEN}Listo.{C.RESET}")
+        print(f"{C.DIM}El frontend loguea un inventario de {home} al arrancar: "
+              f"revisa bringup-NNN.log para confirmar que lo ve.{C.RESET}")
+    except Exception as e:
+        print(f"{C.RED}Falló la subida: {e}{C.RESET}")
+    finally:
+        ftp_ops.quit_(ftp)
+
+
 def action_upload_eboot(cfg):
     eboot = cfgmod.resolve(cfg, "local_eboot")
     if not eboot.exists():
@@ -333,6 +394,7 @@ def main():
     menu = [
         ("Subir VPK (instalar/reinstalar)", lambda: action_upload_vpk(cfg)),
         ("Subir solo eboot.bin (iteración rápida)", lambda: action_upload_eboot(cfg)),
+        ("Subir datos del home J2ME (classes.zip + .jar)", lambda: action_upload_home_data(cfg)),
         ("Descargar log + crash dump más recientes", lambda: action_download_latest(cfg)),
         ("Elegir un log/dump específico para bajar", lambda: action_pick_remote_file(cfg)),
         ("Analizar un crash dump ya descargado", lambda: action_analyze_local(cfg)),

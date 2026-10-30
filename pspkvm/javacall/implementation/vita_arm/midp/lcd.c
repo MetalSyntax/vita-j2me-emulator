@@ -52,6 +52,12 @@ static int fit_scr = -1;
 /* Textura espejo del offscreen: mismo formato 565, subida directa. */
 static vita2d_texture *j2me_tex = NULL;
 static int tex_linear = 0; /* 0 nearest (defecto), 1 bilinear */
+static int vita_vblank_wait = -1; /* espejo de lo seteado (sin getter) */
+
+/* Contador de frames presentados (watchdog del frontend: mide FPS reales
+ * y distingue "colgado" de "lento"). Volátil: lo escribe el hilo LCD/JVM
+ * y lo lee el hilo HB sin lock (estadística, carreras benignas). */
+volatile unsigned long vita_flush_count = 0;
 
 static void vita_apply_filter(void) {
     if (!j2me_tex) return;
@@ -170,38 +176,58 @@ static void vita_dest_rect(int scr_w, int scr_h,
  * @retval JAVACALL_FAIL    fail
  */
 javacall_result javacall_lcd_init(void) {
-       javacall_printf("VITAJ2ME-TRACE: lcd_init %dx%d\n", vscr_w, vscr_h);
+       /* Prueba de qué VPK corre en consola (fingerprint de lib). */
+       javacall_printf("VITAJ2ME-TRACE: lcd_init %dx%d vblank_wait=%d\n",
+                       vscr_w, vscr_h, vita_vblank_wait);
        if (!j2me_tex) {
            vita2d_init();
            vita2d_set_clear_color(0xFF000000);
-           vita2d_set_vblank_wait(1);
+           /* Bug real #24 (1 FPS en juego): SIN espera de vblank.
+            * Cada flush_partial hace swap_buffers; con wait(1) cada
+            * repintado parcial bloquea hasta 16.7 ms y un frame con
+            * decenas de parciales (barra de "cargando", sprites) tarda
+            * ~1 s. En PSP pspFrameEnd() hace SwapBuffers SIN WaitVblank
+            * (línea comentada en psp_mips/midp/lcd.c) — paridad. El
+            * coste GPU por parcial (clear + quad 960x544) es trivial;
+            * el bloqueo era lo que mataba. Posible tearing ocasional,
+            * igual que en PSP. */
+           vita_vblank_wait = 0;
+           vita2d_set_vblank_wait(vita_vblank_wait);
            j2me_tex = vita2d_create_empty_texture_format(
                512, 512, SCE_GXM_TEXTURE_FORMAT_U5U6U5_RGB);
            if (!j2me_tex) {
                return JAVACALL_FAIL;
            }
-           /* Filtro configurable (por defecto nearest = 2x nítido). */
-           {
-               char* result = NULL;
-               tex_linear = 0;
-               if (javacall_get_property("vita_filter", JAVACALL_INTERNAL_PROPERTY,
-                                         &result) == JAVACALL_OK) {
-                   if (result != NULL &&
-                       (result[0] == 'l' || result[0] == 'L' ||
-                        result[0] == 'b' || result[0] == 'B')) {
-                       tex_linear = 1;
-                   }
-               }
-           }
-           vita_apply_filter();
        }
 
-       if (fit_scr == -1) {
-           char* result;
-           fit_scr = 0;
-           if (javacall_get_property("fit_screen", JAVACALL_INTERNAL_PROPERTY, &result) == JAVACALL_OK) {
-               if (result != NULL && (result[0] == 'y' || result[0] == 'Y')) fit_scr = 1;
+       /* Propiedades en CADA init (no solo al crear): el frontend puede
+        * inicializar temprano para el splash (ver main.c) cuando aún no
+        * hay config cargada; al reentrar la JVM con config, los valores
+        * reales deben imponerse igual. */
+       {
+           char* result = NULL;
+           int linear = 0;
+           if (javacall_get_property("vita_filter", JAVACALL_INTERNAL_PROPERTY,
+                                     &result) == JAVACALL_OK) {
+               if (result != NULL &&
+                   (result[0] == 'l' || result[0] == 'L' ||
+                    result[0] == 'b' || result[0] == 'B')) {
+                   linear = 1;
+               }
            }
+           if (linear != tex_linear) {
+               tex_linear = linear;
+               vita_apply_filter();
+           }
+       }
+
+       {
+           char* result;
+           int fit = 0;
+           if (javacall_get_property("fit_screen", JAVACALL_INTERNAL_PROPERTY, &result) == JAVACALL_OK) {
+               if (result != NULL && (result[0] == 'y' || result[0] == 'Y')) fit = 1;
+           }
+           fit_scr = fit;
        }
 
        return JAVACALL_OK;
@@ -329,6 +355,7 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
         dw / (float)draw_w, dh / (float)draw_h);
     vita2d_end_drawing();
     vita2d_swap_buffers();
+    vita_flush_count++;
     return JAVACALL_OK;
 }
 
@@ -386,6 +413,12 @@ void javacall_set_new_screen_size(int w, int h) {
     }
 
     javacall_printf("javacall_set_new_screen_size: %d, %d\n",w,h);
+    /* Guardia: w/h<=0 dejaba vita_dest_rect dividiendo por cero y el
+     * resize recreando GXM para nada (pantalla negra 1 frame). */
+    if (w <= 0 || h <= 0) {
+        javacall_printf("javacall_set_new_screen_size: ignorado (<=0)\n");
+        return;
+    }
     if (w > 512) w = 512;
     if (h > 512) h = 512;
     vscr_w = w;
@@ -401,12 +434,17 @@ void javacall_lcd_enable_flush(int enable) {
 void javacall_lcd_show_splash() {
 	unsigned short* p;
 	int x, y;
+	int w, h;
 
 	memset(scbuff, 0, sizeof(_offscreen));
            p = (unsigned short*)DukeTango + 2;
-           for (y = 0; y < 272; y++) {
-        	for (x = 0; x < 480; x++) {
-     			scbuff[x + y * 480] = p[x+y*480];
+           /* El splash es 480x272 fijo; si la pantalla es otra se centra
+            * y recorta (antes pitch 480 hardcodeado = shear con vscr!=480). */
+           w = vscr_w < 480 ? vscr_w : 480;
+           h = vscr_h < 272 ? vscr_h : 272;
+           for (y = 0; y < h; y++) {
+        	for (x = 0; x < w; x++) {
+     			scbuff[x + y * vscr_w] = p[x+y*480];
      		}
            }
           javacall_lcd_flush();

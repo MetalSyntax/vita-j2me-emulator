@@ -98,7 +98,29 @@ ReturnOop TaskMirror::clinit_list_remove(Oop *containing_class){
   TaskMirror::Raw prev;
   TaskMirror::Raw found = list.obj();
   TaskMirror::Raw next;
-  GUARANTEE(found.not_null(), "clinit list must not be null");
+  // Bug real #15 (Vita): los dos GUARANTEE de abajo documentan una
+  // precondicion que en un build PRODUCT nadie chequea (son no-ops), y el
+  // `do{}while` entra SIEMPRE una vez -- con la lista vacia el primer
+  // found().containing_class() lee de 0x0. Data abort real en consola.
+  //
+  // Lo dispara SystemDictionary::update_fake_class(): si el TaskMirror de
+  // la clase "fake" es el marcador is_being_initialized llama aca, pero
+  // ese marcador es un singleton compartido (task_class_init_marker), NO
+  // un TaskMirror dado de alta con clinit_list_add() -> la clase nunca
+  // estuvo en la lista. Sin ROM image (ROMIZING=false en este port) el
+  // camino de clases fake se ejercita muchisimo mas que en 2006.
+  //
+  // Si no esta en la lista no hay nada que sacar: NULL. Los tres call
+  // sites lo toleran (update_fake_class ignora el retorno;
+  // thread_task_cleanup solo llama sobre elementos que acaba de encontrar
+  // recorriendo la lista; set_initialized hace un lookup justo antes).
+  //
+  // NOTA: mientras romgen.exe siga bloqueado (Bug real #14) este fuente NO
+  // se compila -- el fix activo es el wrapper de vita/vm_patches.c mas
+  // vita/patch_vm_calls.py. Al recompilar CLDC hay que sacar ambos.
+  if (found.is_null()) {
+    return NULL;
+  }
   do {
     if (cc == found().containing_class()){
       break;
@@ -106,7 +128,9 @@ ReturnOop TaskMirror::clinit_list_remove(Oop *containing_class){
     prev = found;
     found = found().next_in_clinit_list();
   } while(found.not_null());
-  GUARANTEE(found.not_null(), "element must be found in clinit list");
+  if (found.is_null()) {
+    return NULL;
+  }
   next = found().next_in_clinit_list();
   found().clear_next_in_clinit_list();
   if( prev.not_null() ) {

@@ -34,22 +34,8 @@ TARGET_VM		= cldc_vm
 # Platform-specific compiler flags
 # -marm: vitasdk compila en Thumb-2 por defecto, pero el ASM inline de
 # 2009 (gxj_graphics_asm.c, instrucciones condicionales A32) exige ARM.
-#
-# -fno-optimize-sibling-calls (Bug real #14): libmidp es el UNICO .a ARM;
-# cldc/javacall/pcsl son Thumb. Cuando una funcion ARM llama a una Thumb,
-# el linker convierte `bl` en `blx <label>` (PC-relativo, correcto). Pero
-# en un TAIL CALL emite `b <label>` y A32 no tiene "branch with exchange"
-# PC-relativo, asi que interpone un veneer .glue_7:
-#     ldr pc, [pc, #-4] ; .word <direccion ABSOLUTA del destino>
-# Ese .word necesita una R_ARM_ABS32, y GNU ld NO emite relocaciones para
-# los stubs que el mismo genera, ni siquiera con -Wl,-q: quedan fuera de
-# .rel.text (verificado: las relocs cortan en 0x81172de0, los veneers
-# empiezan en 0x81172df0). vita-elf-create no tiene nada que convertir y
-# el .word queda congelado en la direccion de LINK. Como la Vita carga el
-# modulo con delta +0x4000, el salto cae por debajo del modulo -> Prefetch
-# Abort. Sin tail calls solo quedan `bl`->`blx`, PC-relativos y seguros.
-EXTRA_CPPFLAGS += -DVITA -DARM -fno-strict-aliasing -mfloat-abi=softfp -marm -fno-optimize-sibling-calls
-EXTRA_CFLAGS += -DVITA -DARM -fno-strict-aliasing -mfloat-abi=softfp -marm -fno-optimize-sibling-calls
+EXTRA_CPPFLAGS += -DVITA -DARM -fno-strict-aliasing -mfloat-abi=softfp -marm
+EXTRA_CFLAGS += -DVITA -DARM -fno-strict-aliasing -mfloat-abi=softfp -marm
 PATHSEP = :
 
 # Platform-specific linker flags and libraries

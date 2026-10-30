@@ -582,8 +582,11 @@ javacall_result javacall_fileconnection_get_total_size(const javacall_utf16* pat
  *         <tt>JAVACALL_FAIL</tt> otherwise
  */
 javacall_result javacall_fileconnection_get_mounted_roots(javacall_utf16* /* OUT */ roots,
-                                                          int rootsLen) {
-    static char* root = "root/\nmusic/\nphoto/\nvideo/\ngraphics/\nrecordings/\ntones/";
+                                                           int rootsLen) {
+    /* Vita: se expone games/ (ux0:data/vitaj2me/games) para que el
+     * instalador (DiscoveryApp/CommandLineInstaller) y los MIDlets vean
+     * los .jar/.jad por FTP. Ver get_path_for_root abajo. */
+    static char* root = "root/\nmusic/\nphoto/\nvideo/\ngraphics/\nrecordings/\ntones/\ngames/";
     int i;
     int len = strlen(root);
    
@@ -815,7 +818,7 @@ javacall_fileconnection_get_private_dir(javacall_utf16* /* OUT */ dir,
  */
 javacall_result javacall_fileconnection_get_localized_mounted_roots(javacall_utf16* /* OUT */ roots,
                                                                     int rootsLen) {
-    static char* root = "root/;music/;photo/;video/;graphics/;recordings/;tones/";
+    static char* root = "root/;music/;photo/;video/;graphics/;recordings/;tones/;games/";
     int i;
     int len = strlen(root);
    
@@ -1046,11 +1049,13 @@ javacall_result javacall_fileconnection_get_path_for_root(const javacall_utf16* 
                                                           int pathNameLen) {
 
     /* Fase 3 Vita: raíces en ux0:/data/vitaj2me/ en vez de ms0:/.
-     * Se mantienen los 8 slots (root/private/music/photo/video/
-     * recordings/tones/graphics) para no romper índices Java. */
-    static char* realroot_def[] = {"ux0:/data/vitaj2me/root/", "ux0:/data/vitaj2me/private/", "ux0:/data/vitaj2me/music/", "ux0:/data/vitaj2me/photo/", "ux0:/data/vitaj2me/video/", "ux0:/data/vitaj2me/recordings/", "ux0:/data/vitaj2me/tones/", "ux0:/data/vitaj2me/graphics/"};
-    static char* root[] = {"root/", "private/", "music/", "photo/", "video/", "recordings/", "tones/", "graphics/"};
-    static char* propname[] = {"root_dir", "private_dir", "music_dir", "photo_dir", "video_dir", "recordings_dir", "tones_dir", "graphics_dir"};
+     * games/ es la 9na raíz (visible en get_mounted_roots): ahí caen
+     * por FTP los .jar/.jad y el frontend los auto-instala al arrancar
+     * (ver vita/main.c). La lista es dinámica en Java (DefaultFileHandler
+     * resuelve cada raíz por nombre), así que agregar una no rompe nada. */
+    static char* realroot_def[] = {"ux0:/data/vitaj2me/root/", "ux0:/data/vitaj2me/private/", "ux0:/data/vitaj2me/music/", "ux0:/data/vitaj2me/photo/", "ux0:/data/vitaj2me/video/", "ux0:/data/vitaj2me/recordings/", "ux0:/data/vitaj2me/tones/", "ux0:/data/vitaj2me/graphics/", "ux0:/data/vitaj2me/games/"};
+    static char* root[] = {"root/", "private/", "music/", "photo/", "video/", "recordings/", "tones/", "graphics/", "games/"};
+    static char* propname[] = {"root_dir", "private_dir", "music_dir", "photo_dir", "video_dir", "recordings_dir", "tones_dir", "graphics_dir", "games_dir"};
     int i, r;
     int len;
     int ne;
