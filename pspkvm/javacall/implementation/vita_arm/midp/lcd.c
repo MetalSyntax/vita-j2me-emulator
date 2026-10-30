@@ -5,7 +5,7 @@
  * vscr_w/h dinámicos); el flush lo presenta en pantalla.
  * Cambios:
  *  - pspgu/pspge/pspdisplay + swizzle_fast + advancedBlit + vram 0x04000000
- *    -> vita2d: textura 512x512 U5U6U5_RGB (cero conversiones: el 565 va
+ *    -> vita2d: textura 512x512 U5U6U5_BGR (cero conversiones: el 565 va
  *    directo a GPU) + draw_texture_part_scale con los mismos 3 modos PSP
  *    (centrado 1:1, aspect-fit, stretch) + rotación 90.
  *  - Resolución: Vita 960x544 = 2x exacto de 480x272. Un juego clásico
@@ -193,8 +193,16 @@ javacall_result javacall_lcd_init(void) {
             * igual que en PSP. */
            vita_vblank_wait = 0;
            vita2d_set_vblank_wait(vita_vblank_wait);
+           /* Bug real #26 (colores R/B invertidos en AMS y juegos):
+            * libmidp.a se compila con -DBIG_ENDIAN_FRAMEBUFFER=1
+            * (midp/build/javacall_vita/GNUmakefile, heredado de PSP,
+            * cuyo GU_PSM_5650 es BGR): gxj empaqueta el ROJO en los bits
+            * BAJOS. jsr184 (m3g_pixel.h) y DukeTango siguen la misma
+            * convención. La textura tiene que ser BGR565, no R5G6B5:
+            * con _RGB el skin azul de 2006 salía naranja (captura
+            * 2026-09-26) y todos los juegos con R<->B cambiados. */
            j2me_tex = vita2d_create_empty_texture_format(
-               512, 512, SCE_GXM_TEXTURE_FORMAT_U5U6U5_RGB);
+               512, 512, SCE_GXM_TEXTURE_FORMAT_U5U6U5_BGR);
            if (!j2me_tex) {
                return JAVACALL_FAIL;
            }

@@ -195,6 +195,12 @@ static int KeyThread(SceSize args, void *argp)
 		    }
 
 		    if (vitaKey == DEBUG_TRACE_KEY) {
+		    	/* checkForSystemSignal (midp_msgQueue_md.c) llama a pss():
+		    	 * pila de TODOS los hilos Java al jvm.log. Si el VM está
+		    	 * esperando eventos (cuelgue en Java) el volcado sale; si
+		    	 * esta línea aparece SIN volcado detrás, el hilo de la JVM
+		    	 * está atascado en nativo (mirar el HB "main:"). */
+		    	javacall_printf("VITAJ2ME-KEY: L+R+START -> volcado de hilos Java (pss)\n");
 		    	javanotify_key_event(JAVACALL_KEY_DEBUG_TRACE, JAVACALL_KEYPRESSED);
 		    	//display_log(1);
 		    	lastRawVitaKey = pad.buttons;

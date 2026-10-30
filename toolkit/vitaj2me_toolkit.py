@@ -112,6 +112,19 @@ def action_upload_home_data(cfg):
     else:
         print(f"{C.RED}No existe {classes} — falta compilar la Fase 2b.{C.RESET}")
 
+    # Tema de la UI (ui-theme/build_theme.py): skin.bin + tiles de lib/ y
+    # los PNG del AMS en appdb/. De appdb/ SOLO PNG: ahí también viven
+    # _suites.dat/*.ii/*.ap de las suites instaladas en la consola.
+    data = root / "_prebuilt" / "data"
+    theme = [f for f in sorted((data / "lib").glob("*"))
+             if f.is_file() and not f.name.startswith("._")]
+    theme_ams = [f for f in sorted((data / "appdb").glob("*.png"))
+                 if not f.name.startswith("._")]
+    for f in theme:
+        items.append((f, f"{home}/lib", None))
+    for f in theme_ams:
+        items.append((f, f"{home}/appdb", None))
+
     # .jar/.jad sueltos en la raiz del repo o en games/ (para probar la
     # deteccion de MIDlets desde el AMS).
     seen = set()
@@ -131,7 +144,10 @@ def action_upload_home_data(cfg):
 
     print("Se va a subir:")
     for _local, dest, label in items:
-        print(f"  {label}  ->  {dest}/")
+        if label:
+            print(f"  {label}  ->  {dest}/")
+    print(f"  tema UI: {len(theme)} archivos -> {home}/lib/, "
+          f"{len(theme_ams)} PNG -> {home}/appdb/")
     if not tui.confirm("¿Continuar?", default=True):
         print("Cancelado.")
         return
@@ -394,7 +410,7 @@ def main():
     menu = [
         ("Subir VPK (instalar/reinstalar)", lambda: action_upload_vpk(cfg)),
         ("Subir solo eboot.bin (iteración rápida)", lambda: action_upload_eboot(cfg)),
-        ("Subir datos del home J2ME (classes.zip + .jar)", lambda: action_upload_home_data(cfg)),
+        ("Subir datos del home J2ME (classes.zip + tema UI + .jar)", lambda: action_upload_home_data(cfg)),
         ("Descargar log + crash dump más recientes", lambda: action_download_latest(cfg)),
         ("Elegir un log/dump específico para bajar", lambda: action_pick_remote_file(cfg)),
         ("Analizar un crash dump ya descargado", lambda: action_analyze_local(cfg)),

@@ -12,6 +12,8 @@
  */
 
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/error.h>
 #include "javacall_events.h"
 #include "javacall_logging.h"
 #include <stdlib.h>
@@ -68,21 +70,25 @@ javacall_result javacall_event_receive(
         busy_count = 0;
     }
 
+    /* Bug real #25: antes se soltaba el mutex ANTES de sceKernelWaitCond.
+     * WaitCond exige tener cogido el mutex asociado (lo suelta y lo
+     * re-coge atómicamente, como pthread_cond_wait). Sin él: error
+     * inmediato (espera infinita -> FAIL -> la JVM re-entra en bucle;
+     * espera acotada -> iteraciones sin dormir = spin al 100%) y, aun si
+     * esperara, un send entre el unlock y el wait se perdía (lost
+     * wakeup: JVM dormida con un evento ya en cola). Ahora el chequeo y
+     * la espera van bajo el mismo mutex. */
     if (timeTowaitInMillisec < 0) {
     	busy_count = 0;
-        /* Espera infinita con wakeups por signal. */
-        for (;;) {
-            sceKernelLockMutex(_vita_ev_mutex, 1, NULL);
-            msg = _vita_event_ring[_mbxid_recv];
-            if (msg != NULL) {
-                break; /* con mutex cogido */
-            }
-            sceKernelUnlockMutex(_vita_ev_mutex, 1);
+        sceKernelLockMutex(_vita_ev_mutex, 1, NULL);
+        while ((msg = _vita_event_ring[_mbxid_recv]) == NULL) {
             ret = sceKernelWaitCond(_vita_ev_cond, NULL);
             if (ret < 0) {
+                sceKernelUnlockMutex(_vita_ev_mutex, 1);
                 return JAVACALL_FAIL;
             }
         }
+        /* con mutex cogido */
     } else if (timeTowaitInMillisec == 0) {
        busy_count++;
        if (sceKernelTryLockMutex(_vita_ev_mutex, 1) < 0) {
@@ -97,26 +103,27 @@ javacall_result javacall_event_receive(
     } else {
        busy_count = 0;
        {
-           SceUInt to = (SceUInt)timeTowaitInMillisec * 1000;
-           SceUInt deadline = to;
-           for (;;) {
-               sceKernelLockMutex(_vita_ev_mutex, 1, NULL);
-               msg = _vita_event_ring[_mbxid_recv];
-               if (msg != NULL) {
-                   break; /* con mutex cogido */
-               }
-               sceKernelUnlockMutex(_vita_ev_mutex, 1);
-               if (deadline == 0) {
+           /* Deadline absoluto: los wakeups espurios/por otro evento no
+            * alargan ni acortan la espera total. */
+           SceUInt64 deadline = sceKernelGetProcessTimeWide() +
+                                (SceUInt64)timeTowaitInMillisec * 1000u;
+           sceKernelLockMutex(_vita_ev_mutex, 1, NULL);
+           while ((msg = _vita_event_ring[_mbxid_recv]) == NULL) {
+               SceUInt64 now = sceKernelGetProcessTimeWide();
+               SceUInt left;
+               if (now >= deadline) {
+                   sceKernelUnlockMutex(_vita_ev_mutex, 1);
                    return JAVACALL_FAIL;
                }
-               /* Espera acotada y re-evalúa (wakeups espurios). */
-               {
-                   SceUInt quantum = deadline > 5000 ? 5000 : deadline;
-                   ret = sceKernelWaitCond(_vita_ev_cond, &quantum);
-                   (void)ret;
-                   deadline -= (deadline > 5000 ? 5000 : deadline);
+               left = (SceUInt)(deadline - now);
+               ret = sceKernelWaitCond(_vita_ev_cond, &left);
+               if (ret < 0 && ret != (int)SCE_KERNEL_ERROR_WAIT_TIMEOUT) {
+                   /* Error real (no timeout): no girar en vacío. */
+                   sceKernelUnlockMutex(_vita_ev_mutex, 1);
+                   return JAVACALL_FAIL;
                }
            }
+           /* con mutex cogido */
        }
     }
 
