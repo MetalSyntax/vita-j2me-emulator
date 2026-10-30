@@ -80,6 +80,7 @@ extern volatile unsigned long vita_jvmlog_empty;
 extern volatile unsigned long vita_jvmlog_bytes;
 extern volatile unsigned long long vita_jvmlog_io_us;
 int vita_event_cond_uid(void);
+void vita_jvmlog_flush(void);
 void javanotify_key_event(int key, int type);
 #define VJ_KEY_DEBUG_TRACE (-22) /* JAVACALL_KEY_DEBUG_TRACE */
 #define VJ_KEYPRESSED 1
@@ -110,6 +111,7 @@ static int hb_thread(SceSize args, void *argp) {
 
         sceKernelDelayThread(10 * 1000 * 1000);
         ticks += 10;
+        vita_jvmlog_flush();  /* el jvm log se vuelca por tiempo: no dejarlo colgado */
         f = vita_flush_count;
         k = vita_key_count;
         memset(&ti, 0, sizeof(ti));
@@ -769,11 +771,16 @@ static void boot_installer_mode(const char *fname) {
 static vj_game pre_game;
 static vj_cfg pre_cfg;
 static volatile int vm_dead = 0, game_started = 0;
+static vj_game cur_game;  /* el que corre: lo usa el menú del juego */
+
+void vita_jvmlog_flush(void);
+extern void (*vita_lcd_menu_hook)(void);
 
 static void relaunch(const char *a1, const char *a2) {
     char *args[3] = { (char *)a1, (char *)a2, NULL };
     log_line("relanzando app0:eboot.bin %s %s", a1 ? a1 : "",
              a2 ? a2 : "");
+    vita_jvmlog_flush();
     sceAppMgrLoadExec("app0:eboot.bin", a1 ? args : NULL, NULL);
     sceKernelExitProcess(0);
 }
@@ -791,6 +798,68 @@ static void run_ams(void) {
     log_line("<< JavaTask() retornó (shutdown)");
     log_line("bringup OK. sceKernelExitProcess(0)");
     sceKernelExitProcess(0);
+}
+
+/* L+R+START en juego (hilo de la VM, dentro del flush de lcd.c). */
+static void game_menu_hook(void) {
+    if (launcher_game_menu(&cur_game)) {
+        log_line("menú: salir del juego a la biblioteca");
+        relaunch(NULL, NULL);
+    }
+}
+
+/* ----------------------------------------------------------------------
+ * Vigía del ROM (crash HW 045): al cambiar de stage en SoD el GC murió en
+ * ROM::oops_do con la cabecera (klass) del PRIMER objeto de
+ * _rom_data_block a 0. Ese bloque se copia una vez desde
+ * _rom_data_block_src al arrancar y las cabeceras no cambian nunca: algo
+ * lo pisa. Cada 20 ms se compara la primera palabra; si cambió, se
+ * registra qué tramo inicial difiere y se restauran las palabras a 0
+ * que en el original no lo eran (la corrupción vista), antes del
+ * siguiente GC.
+ * ---------------------------------------------------------------------- */
+extern int _rom_data_block[];
+extern const int _rom_data_block_src[];
+extern const int _rom_data_block_size;
+
+static int rom_guard_thread(SceSize args, void *argp) {
+    int words = _rom_data_block_size / 4, events = 0;
+    (void)args; (void)argp;
+    for (;;) {
+        sceKernelDelayThread(20 * 1000);
+        if (_rom_data_block[0] == _rom_data_block_src[0]) continue;
+        {
+            int i, zeros = 0, diff = 0, first_ok = -1;
+            for (i = 0; i < words && i < 4096; i++) {
+                if (_rom_data_block[i] != _rom_data_block_src[i]) diff++;
+                if (first_ok < 0 && _rom_data_block[i] != 0) first_ok = i;
+            }
+            log_line("ROMGUARD #%d: _rom_data_block[0]=0x%08x (original "
+                     "0x%08x); primera palabra no nula en +%d, %d palabras "
+                     "distintas en las primeras %d; [1..3]=%08x %08x %08x",
+                     ++events, (unsigned)_rom_data_block[0],
+                     (unsigned)_rom_data_block_src[0], first_ok * 4, diff,
+                     i, (unsigned)_rom_data_block[1],
+                     (unsigned)_rom_data_block[2],
+                     (unsigned)_rom_data_block[3]);
+            for (i = 0; i < words && _rom_data_block[i] == 0; i++) {
+                if (_rom_data_block_src[i] != 0) {
+                    _rom_data_block[i] = _rom_data_block_src[i];
+                    zeros++;
+                }
+            }
+            if (_rom_data_block[0] != _rom_data_block_src[0])
+                _rom_data_block[0] = _rom_data_block_src[0];
+            log_line("ROMGUARD #%d: restauradas %d palabras", events, zeros);
+        }
+    }
+    return 0;
+}
+
+static void start_rom_guard(void) {
+    SceUID th = sceKernelCreateThread("vj_romguard", rom_guard_thread,
+                                      0x10000100, 0x2000, 0, 0, NULL);
+    if (th >= 0) sceKernelStartThread(th, 0, NULL);
 }
 
 /* Tras JavaTask: el juego terminó -> volver a la biblioteca. */
@@ -826,8 +895,10 @@ static void play_direct(int suite_id) {
         return;
     }
     cfg_load(&g, &c);
-    cfg_apply(&c);
+    cfg_apply(&c, 0);
     cfg_set_last_suite(g.suite_id);
+    cur_game = g;
+    vita_lcd_menu_hook = game_menu_hook;
     log_line("MODO JUEGO DIRECTO (-play, sin precarga)...");
     vita_start_game(&g, &c, 0);
     launcher_loading_start(&g);
@@ -862,7 +933,9 @@ static int library_thread(SceSize args, void *argp) {
     }
     /* Mismo juego: lo demás (escala, filtro, teclado, botones) se aplica
      * en caliente, y se abre la compuerta. */
-    cfg_apply(&c);
+    cfg_apply(&c, 1);
+    cur_game = g;
+    vita_lcd_menu_hook = game_menu_hook;
     launcher_loading_start(&g);
     game_started = 1;
     suspend_key_input = 0;
@@ -885,7 +958,7 @@ static void library_with_preload(void) {
         return;
     }
     cfg_load(&pre_game, &pre_cfg);
-    cfg_apply(&pre_cfg);
+    cfg_apply(&pre_cfg, 0);
     fd = sceIoOpen(GATE_FILE, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
     if (fd >= 0) sceIoClose(fd);
     launcher_preload_hold();
@@ -1023,6 +1096,7 @@ int main(int argc, char *argv[]) {
     /* Watchdog de sesión (petición explícita: mejores logs): late
      * cada 10 s con FPS y teclas aunque la JVM esté atascada. */
     start_watchdog();
+    start_rom_guard();
     /* Splash inmediato (bug #21): el bootstrap tarda segundos y el
      * instalador no pinta nada — pantalla negra = "no corre". Best
      * effort: si vita2d falla, se sigue igual (la JVM lo reintentará). */

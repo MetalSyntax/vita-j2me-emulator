@@ -52,8 +52,9 @@ void cfg_save(const vj_game *g, const vj_cfg *c);
 void cfg_screen(const vj_cfg *c, int *w, int *h);
 void cfg_layout(const vj_cfg *c, vj_layout *lo);
 const char *cfg_key_name(int code);
-/* Antes de JavaTask (y otra vez si cambian ajustes en caliente). */
-void cfg_apply(const vj_cfg *c);
+/* Antes de JavaTask (live=0) o en caliente con el juego corriendo
+ * (live=1: no toca la resolución, que la VM ya fijó). */
+void cfg_apply(const vj_cfg *c, int live);
 
 int cfg_last_suite(void);
 void cfg_set_last_suite(int suite_id);

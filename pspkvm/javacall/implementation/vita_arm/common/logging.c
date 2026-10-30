@@ -57,10 +57,21 @@ static SceUID log_fd = -1;
  * byte (io 600 ms de cada segundo): System.out de CLDC llega por
  * JVMSPI_PrintRaw CARÁCTER A CARÁCTER. Buffer por línea: se escribe al
  * ver '\n' o al llenarse. Mutex porque escriben la JVM y key_thread. */
-#define LOG_BUF_SIZE 1024
+/* HW 045: con el juego corriendo, io = 1-1,5 s de cada 10 s en el hilo
+ * de la VM (SoD imprime "heart by liteeeee..." en cada golpe). Ahora:
+ * buffer de 8 KB que se vuelca al llenarse o, en un '\n', si pasó más
+ * de 1 s desde el último volcado; y las líneas idénticas seguidas se
+ * cuentan en vez de escribirse. Se pierde como mucho ~1 s de log si el
+ * proceso muere (los dumps siguen teniendo el resto). */
+#define LOG_BUF_SIZE 8192
+#define LOG_FLUSH_US 1000000ull
 static char log_buf[LOG_BUF_SIZE];
 static int log_buf_len = 0;
 static SceUID log_mutex = -1;
+static SceUInt64 log_last_flush = 0;
+/* línea en curso y la última completa, para colapsar repeticiones */
+static char line_cur[256], line_prev[256];
+static int line_cur_len = 0, line_rep = 0;
 
 static int log_open(void) {
     char path[128];
@@ -100,6 +111,39 @@ static void log_flush_locked(void) {
     log_buf_len = 0;
 }
 
+static void log_put_locked(const char *s, int n) {
+    if (log_buf_len + n > LOG_BUF_SIZE) log_flush_locked();
+    if (n > LOG_BUF_SIZE) n = LOG_BUF_SIZE;
+    memcpy(log_buf + log_buf_len, s, (size_t)n);
+    log_buf_len += n;
+}
+
+/* Una línea completa (con '\n') en line_cur. */
+static void log_line_done_locked(void) {
+    SceUInt64 now;
+    if (line_cur_len == (int)strlen(line_prev) &&
+        memcmp(line_cur, line_prev, (size_t)line_cur_len) == 0) {
+        line_rep++;
+    } else {
+        if (line_rep > 0) {
+            char note[64];
+            int k = snprintf(note, sizeof(note),
+                             "  (x%d la línea anterior)\n", line_rep);
+            log_put_locked(note, k);
+            line_rep = 0;
+        }
+        log_put_locked(line_cur, line_cur_len);
+        memcpy(line_prev, line_cur, (size_t)line_cur_len);
+        line_prev[line_cur_len] = 0;
+    }
+    line_cur_len = 0;
+    now = sceKernelGetProcessTimeWide();
+    if (now - log_last_flush >= LOG_FLUSH_US) {
+        log_flush_locked();
+        log_last_flush = now;
+    }
+}
+
 static void log_to_file(const char *s) {
     size_t n = strlen(s), i;
     vita_jvmlog_writes++;
@@ -112,11 +156,20 @@ static void log_to_file(const char *s) {
     }
     if (log_mutex >= 0) sceKernelLockMutex(log_mutex, 1, NULL);
     for (i = 0; i < n; i++) {
-        log_buf[log_buf_len++] = s[i];
-        if (s[i] == '\n' || log_buf_len == LOG_BUF_SIZE) {
-            log_flush_locked();
+        if (line_cur_len < (int)sizeof(line_cur) - 1)
+            line_cur[line_cur_len++] = s[i];
+        if (s[i] == '\n' || line_cur_len == (int)sizeof(line_cur) - 1) {
+            if (s[i] != '\n') line_cur[line_cur_len++] = '\n';
+            log_line_done_locked();
         }
     }
+    if (log_mutex >= 0) sceKernelUnlockMutex(log_mutex, 1);
+}
+
+/* Para el frontend (salida ordenada, menú, relanzar): vuelca ya. */
+void vita_jvmlog_flush(void) {
+    if (log_mutex >= 0) sceKernelLockMutex(log_mutex, 1, NULL);
+    log_flush_locked();
     if (log_mutex >= 0) sceKernelUnlockMutex(log_mutex, 1);
 }
 

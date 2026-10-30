@@ -47,10 +47,12 @@ static int max_heap_size = 0;
  */
 void* javacall_memory_heap_allocate(int size, /*OUT*/ int* outSize) {
 #ifdef VITA
-	/* Fase 6: la Vita da ~400MB al proceso (frente a 32/64MB de la PSP).
-	 * Se prueba un heap CVM de hasta 192MB; el resto queda para texturas
-	 * vita2d (~2MB), audio, pila de red (64K) y el propio eboot. */
-	int sz=192*1024*1024;
+	/* Sesión 45: antes se probaban 192MB y la JVM se quedaba con ~127MB,
+	 * TODO el heap de newlib salvo 512KB: sin margen para el banco MIDI
+	 * (~12MB en float), fuentes, vita2d, WAV decodificados... Un juego
+	 * J2ME no pasa de unos pocos MB (los móviles tenían 2-32MB): 64MB
+	 * sobra y el GC además recorre menos memoria. */
+	int sz=64*1024*1024;
 #else
 	int sz=64*1024*1024;
 #endif

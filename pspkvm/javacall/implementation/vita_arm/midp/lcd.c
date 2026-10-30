@@ -84,6 +84,10 @@ int vita_lcd_filter = -1;
 volatile float vita_lcd_dest[4] = {0, 0, VITA_SCR_W, VITA_SCR_H};
 /* Dibuja encima del juego (teclado virtual) dentro del mismo frame. */
 void (*vita_lcd_overlay_hook)(void) = 0;
+/* Menú del juego (L+R+START, keypress.c): corre AQUÍ, en el hilo de la
+ * VM, así el juego queda en pausa mientras está abierto. */
+void (*vita_lcd_menu_hook)(void) = 0;
+extern volatile int vita_menu_request;
 
 /* Antes de JavaTask: el MIDlet ve esta pantalla desde el primer
  * getWidth(). Sin javanotify_rotation (aún no hay VM). */
@@ -412,6 +416,11 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
 
     if (vita_loading_should_skip(0)) {
         return JAVACALL_OK;
+    }
+
+    if (vita_menu_request) {
+        vita_menu_request = 0;
+        if (vita_lcd_menu_hook) vita_lcd_menu_hook();
     }
 
     rot = javacall_devemu_get_rotation(javacall_devemu_get_current_device());

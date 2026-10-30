@@ -496,13 +496,15 @@ int jar_detect_screen(const char *jar, int *w, int *h) {
     static const char *const keys[] = {
         "Nokia-MIDlet-Original-Display-Size",
         "Nokia-MIDlet-Target-Display-Size",
+        "SEMC-Screen-Size",  /* Sony Ericsson, p.ej. Die Hard: 432,240 */
+        "MIDlet-Screen-Size",
     };
     int len = 0, i, p, entries = 0, cd_size = 0, best = 0;
     char *m = (char *)jar_entry(jar, "META-INF/MANIFEST.MF", &len);
     FILE *f;
     unsigned char *cd;
     if (m) {
-        for (i = 0; i < 2; i++) {
+        for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++) {
             if (manifest_size(m, keys[i], w, h)) {
                 free(m);
                 return 1;
@@ -1035,7 +1037,7 @@ static void text_wrap(float x, float y, float scale, unsigned int c,
 }
 
 static void draw_settings(const scene *sc, const vj_game *g, const vj_cfg *c,
-                          int row, int top) {
+                          int row, int top, int ingame) {
     const int vis = 10, rh = 34;
     char label[80], val[80];
     float y, x0 = 48, x1 = 560;
@@ -1043,9 +1045,12 @@ static void draw_settings(const scene *sc, const vj_game *g, const vj_cfg *c,
     vita2d_start_drawing();
     vita2d_clear_screen();
     draw_background(sc->frame);
-    text(48, 54, 1.3f, C_WHITE, "Ajustes del juego");
-    text_fit(48 + text_w(1.3f, "Ajustes del juego") + 14, 54, 0.9f, C_TEXT_2,
-             g->name, SCR_W - 420);
+    {
+        const char *title = ingame ? "Juego en pausa" : "Ajustes del juego";
+        text(48, 54, 1.3f, C_WHITE, title);
+        text_fit(48 + text_w(1.3f, title) + 14, 54, 0.9f, C_TEXT_2, g->name,
+                 SCR_W - 420);
+    }
 
     y = 92;
     for (i = top; i < top + vis && i < ROW_N; i++, y += rh) {
@@ -1083,17 +1088,23 @@ static void draw_settings(const scene *sc, const vj_game *g, const vj_cfg *c,
     x0 = 48;
     if (row == ROW_RESET) x0 += hint(x0, 522, 'x', NULL, "Restaurar") + 28;
     else x0 += hint(x0, 522, 0, "< >", "Cambiar") + 28;
-    hint(x0, 522, 'o', NULL, "Guardar y volver");
+    if (ingame) {
+        x0 += hint(x0, 522, 'o', NULL, "Volver al juego") + 28;
+        hint(x0, 522, 't', NULL, "Salir a la biblioteca");
+    } else {
+        hint(x0, 522, 'o', NULL, "Guardar y volver");
+    }
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
 
-/* Devuelve 1 si se guardaron cambios. */
-static int settings_run(scene *sc, const vj_game *g) {
+/* Devuelve 1 si se guardaron cambios; en el juego, 2 = salir del juego.
+ * *out queda con los ajustes vigentes. */
+static int settings_run(scene *sc, const vj_game *g, int ingame, vj_cfg *out) {
     static vj_cfg c, orig;
     SceCtrlData pad;
     unsigned int old = ~0u;
-    int row = 0, top = 0, hold = 0;
+    int row = 0, top = 0, hold = 0, quit = 0;
     cfg_load(g, &c);
     orig = c;
     for (;;) {
@@ -1130,18 +1141,60 @@ static int settings_run(scene *sc, const vj_game *g) {
             }
         }
         if (down & SCE_CTRL_CIRCLE) break;
+        if (ingame && (down & SCE_CTRL_TRIANGLE)) {
+            quit = 1;
+            break;
+        }
         if (row < top) top = row;
         if (row >= top + 10) top = row - 9;
 
         sc->frame++;
-        draw_settings(sc, g, &c, row, top);
+        draw_settings(sc, g, &c, row, top, ingame);
     }
+    if (out) *out = c;
     if (memcmp(&c, &orig, sizeof(c)) != 0) {
         cfg_save(g, &c);
         vj_log("launcher: ajustes de '%s' guardados", g->name);
-        return 1;
+        return quit ? 2 : 1;
     }
-    return 0;
+    return quit ? 2 : 0;
+}
+
+/* Menú del juego: lo llama lcd.c desde el hilo de la VM (juego en pausa).
+ * Devuelve 1 si hay que salir a la biblioteca. */
+extern int suspend_key_input;
+extern volatile int vita_media_paused;
+
+int launcher_game_menu(const vj_game *g) {
+    static scene sc;
+    vj_cfg c;
+    SceCtrlData pad;
+    int r;
+    suspend_key_input = 1;
+    vita_media_paused = 1;
+    if (!font) font = vita2d_load_default_pgf();
+    if (!font) {
+        suspend_key_input = 0;
+        vita_media_paused = 0;
+        return 0;
+    }
+    vj_log("menú del juego abierto");
+    vita2d_set_vblank_wait(1);
+    r = settings_run(&sc, g, 1, &c);
+    /* no devolver el control con un botón aún pulsado (llegaría al juego) */
+    do {
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+        sc.frame++;
+        draw_settings(&sc, g, &c, 0, 0, 1);
+    } while (pad.buttons & (SCE_CTRL_CIRCLE | SCE_CTRL_TRIANGLE |
+                            SCE_CTRL_CROSS | SCE_CTRL_START));
+    vita2d_wait_rendering_done();
+    vita2d_set_vblank_wait(0);  /* lcd.c presenta sin vblank (bug #24) */
+    cfg_apply(&c, 1);
+    vita_media_paused = 0;
+    suspend_key_input = 0;
+    vj_log("menú del juego cerrado (%s)", r == 2 ? "salir" : "seguir");
+    return r == 2;
 }
 
 /* ======================================================================
@@ -1221,7 +1274,7 @@ int launcher_run(vj_game *out, int preselect) {
         was_touch = touch.reportNum > 0;
 
         if ((down & SCE_CTRL_SQUARE) && sc.sel < sc.n) {
-            settings_run(&sc, &sc.games[sc.sel]);
+            settings_run(&sc, &sc.games[sc.sel], 0, NULL);
             old = ~0u;  /* que el ○ de salir de ajustes no cierre esto */
             continue;
         }

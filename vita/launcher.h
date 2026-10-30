@@ -35,6 +35,9 @@ int launcher_list(vj_game *g, int max);
  * contenido. */
 void launcher_loading_start(const vj_game *g);
 
+/* Menú del juego (L+R+START): 1 = salir a la biblioteca. */
+int launcher_game_menu(const vj_game *g);
+
 /* Precarga: la VM corre detrás de la biblioteca sin presentar nada. */
 void launcher_preload_hold(void);
 

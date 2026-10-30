@@ -48,7 +48,8 @@ extern int suspend_key_input;
 const int vj_res[][2] = {
     {128, 128}, {128, 160}, {132, 176}, {176, 204}, {176, 208},
     {176, 220}, {208, 208}, {240, 320}, {320, 240}, {240, 400},
-    {400, 240}, {352, 416}, {360, 640}, {640, 360}, {480, 272},
+    {400, 240}, {240, 432}, {432, 240}, {352, 416}, {360, 640},
+    {640, 360}, {480, 272},
 };
 const int vj_res_n = sizeof(vj_res) / sizeof(vj_res[0]);
 
@@ -430,10 +431,19 @@ static int touch_thread(SceSize args, void *argp) {
     return 0;
 }
 
-void cfg_apply(const vj_cfg *c) {
+void cfg_apply(const vj_cfg *c, int live) {
     int gw, gh, i, n = 0;
+    vj_cfg now;
+    if (live) {
+        /* el layout se calcula con la pantalla que la VM ya tiene */
+        now = *c;
+        now.res = 0;
+        now.auto_w = javacall_lcd_get_screen_width();
+        now.auto_h = javacall_lcd_get_screen_height();
+        c = &now;
+    }
     cfg_screen(c, &gw, &gh);
-    vita_lcd_set_virtual_size(gw, gh);
+    if (!live) vita_lcd_set_virtual_size(gw, gh);
 
     cfg_layout(c, &cur);
     vita_lcd_area[0] = (int)cur.area[0];

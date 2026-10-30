@@ -45,7 +45,11 @@ volatile unsigned long vita_key_count = 0;
 
 #define MULTITASK_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_TRIANGLE)
 #define EXIT_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_CROSS)
-#define DEBUG_TRACE_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_START)
+/* L+R+START abre el menú del juego (vita/launcher.c, vía
+ * vita_menu_request); la traza pss pasa a L+R+SELECT. */
+#define DEBUG_TRACE_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_SELECT)
+#define MENU_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_START)
+volatile int vita_menu_request = 0;
 #define NETWORK_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_SQUARE)
 #define SHIFT_KEY1 SCE_CTRL_LTRIGGER
 #define SHIFT_KEY2 SCE_CTRL_RTRIGGER
@@ -166,6 +170,20 @@ static int KeyThread(SceSize args, void *argp)
 		    	}
 		    	continue;
                   }
+
+		    if (lastVitaKey == MENU_KEY) {
+		    	if (vitaKey == 0) {
+		    		lastVitaKey = 0;
+		    	}
+		    	continue;
+		    }
+
+		    if (vitaKey == MENU_KEY) {
+		    	vita_menu_request = 1;
+		    	lastRawVitaKey = pad.buttons;
+		    	lastVitaKey = vitaKey;
+		    	continue;
+		    }
 
 		    if (lastVitaKey == EXIT_KEY) {
 		    	if (vitaKey == 0) {
