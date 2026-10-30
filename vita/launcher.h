@@ -20,7 +20,6 @@ typedef struct {
 
 enum {
     LAUNCHER_EXIT = -1,     /* salir de la app */
-    LAUNCHER_CLASSIC = 0,   /* abrir el gestor clásico (AMS Java) */
     LAUNCHER_PLAY = 1       /* lanzar *out */
 };
 
@@ -37,6 +36,9 @@ void launcher_loading_start(const vj_game *g);
 
 /* Menú del juego (L+R+START): 1 = salir a la biblioteca. */
 int launcher_game_menu(const vj_game *g);
+
+/* Instalación de games/<jar> con pantalla nativa (sin UI de PSPKVM). */
+void launcher_install_start(const char *jar);
 
 /* Precarga: la VM corre detrás de la biblioteca sin presentar nada. */
 void launcher_preload_hold(void);

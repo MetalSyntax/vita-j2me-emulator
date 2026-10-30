@@ -11,7 +11,7 @@
 //   5. finalize + exit.
 //
 // Salir del juego: L+R+START (DEBUG_TRACE, log), L+R+X apaga el MIDlet,
-// L+R+Triángulo cambia a AMS (ver keypress.c/keymap.c).
+// Sesión 46: sin AMS clásico; en juego L+R+START abre el menú nativo.
 // NOTA: JavaTaskImpl/runMidlet/md vienen de libmidp.a; JavaTask crea
 // el hilo VM internamente (midpInitializeMemory incluido).
 
@@ -692,24 +692,7 @@ void vj_log(const char *fmt, ...) {
     log_line("%s", buf);
 }
 
-static void vita_start_ams(void) {
-    /* AMS Manager con propiedades -D (los juegos las necesitan en
-     * runtime igual que el instalador). */
-    static char manager[] =
-        "com.sun.midp.appmanager.MVMManager";
-    char *argv[] = {
-        vita_arg_runmidlet,
-        vita_arg_D_profiles,
-        vita_arg_D_config,
-        vita_arg_D_encoding,
-        vita_arg_classpathext,
-        vita_arg_classes,
-        vita_arg_internal,
-        manager,
-    };
-    log_line("vita_start_ams() -> AMS Manager (START propio con -D)...");
-    vita_send_start((int)(sizeof(argv) / sizeof(argv[0])), argv);
-}
+static void relaunch(const char *a1, const char *a2);
 
 /* MODO INSTALADOR: el único evento del proceso es el install silencioso
  * (CommandLineInstaller "I <url>"), con -D para matchProfile (bug #22).
@@ -738,20 +721,23 @@ static void boot_installer_mode(const char *fname) {
     argv[n++] = installer;
     argv[n++] = op_install;
     argv[n++] = url; /* 10/10, el maximo del evento */
-    log_line("");
-    log_line("=================================================");
-    log_line("MODO INSTALADOR: %s", fname);
-    log_line("Al terminar la app se cierra SOLA: vuelve a abrirla");
-    log_line("para jugar desde Installed midlets. Detalle en");
-    log_line("jvm-%03d.log (busca 'succesfully installed').", vitaj2me_session_id);
-    log_line("=================================================");
+    log_line("MODO INSTALADOR: %s (pantalla nativa, se relanza al "
+             "terminar; detalle en jvm-%03d.log)", fname,
+             vitaj2me_session_id);
+    {
+        /* Sesión 46: la UI del instalador de PSPKVM (y sus avisos) no se
+         * presenta nunca; se ve "Instalando…" con el estilo de la app. */
+        char jar[320];
+        snprintf(jar, sizeof(jar), VITA_HOME "/games/%s", fname);
+        launcher_install_start(jar);
+    }
     vita_send_start(n, argv);
     log_line("JavaTask() >> (instalador, unico evento del proceso)");
     JavaTask();
-    log_line("<< instalador termino. REINICIA la app para jugar.");
-    log_line("bringup OK. sceKernelExitProcess(0)");
-    sceKernelDelayThread(4 * 1000 * 1000);
-    sceKernelExitProcess(0);
+    /* un proceso = un START (bug #20): relanzar instala el siguiente
+     * pendiente o, si no queda ninguno, abre la biblioteca */
+    log_line("<< instalador termino");
+    relaunch(NULL, NULL);
 }
 
 /* ======================================================================
@@ -791,15 +777,6 @@ static void relaunch_play(int suite_id) {
     relaunch("-play", id);
 }
 
-static void run_ams(void) {
-    vita_start_ams();
-    log_line("JavaTask() >> (toma el hilo principal)");
-    JavaTask();
-    log_line("<< JavaTask() retornó (shutdown)");
-    log_line("bringup OK. sceKernelExitProcess(0)");
-    sceKernelExitProcess(0);
-}
-
 /* L+R+START en juego (hilo de la VM, dentro del flush de lcd.c). */
 static void game_menu_hook(void) {
     if (launcher_game_menu(&cur_game)) {
@@ -823,11 +800,17 @@ extern const int _rom_data_block_src[];
 extern const int _rom_data_block_size;
 
 static int rom_guard_thread(SceSize args, void *argp) {
-    int words = _rom_data_block_size / 4, events = 0;
+    int words = _rom_data_block_size / 4, events = 0, armed = 0;
     (void)args; (void)argp;
     for (;;) {
         sceKernelDelayThread(20 * 1000);
-        if (_rom_data_block[0] == _rom_data_block_src[0]) continue;
+        /* El bloque está a 0 (BSS) hasta que la VM lo copia al arrancar
+         * (falso positivo en HW 046-048): se vigila desde esa copia. */
+        if (_rom_data_block[0] == _rom_data_block_src[0]) {
+            armed = 1;
+            continue;
+        }
+        if (!armed) continue;
         {
             int i, zeros = 0, diff = 0, first_ok = -1;
             for (i = 0; i < words && i < 4096; i++) {
@@ -917,7 +900,6 @@ static int library_thread(SceSize args, void *argp) {
         log_line("biblioteca: salir. sceKernelExitProcess(0)");
         sceKernelExitProcess(0);
     }
-    if (choice == LAUNCHER_CLASSIC) relaunch("-ams", NULL);
 
     cfg_set_last_suite(g.suite_id);
     cfg_load(&g, &c);
@@ -948,13 +930,10 @@ static void library_with_preload(void) {
     SceUID th;
     int fd;
     if (!find_game(cfg_last_suite(), 1, &pre_game) || !pre_game.cls[0]) {
-        /* nada instalado: biblioteca sin precarga (solo gestor/salir) */
+        /* nada instalado: biblioteca vacía (solo explica y sale) */
         static vj_game g;
-        int choice = launcher_run(&g, -1);
-        if (choice == LAUNCHER_EXIT) sceKernelExitProcess(0);
-        if (choice == LAUNCHER_PLAY) relaunch_play(g.suite_id);
-        log_line("MODO AMS (gestor clásico)...");
-        run_ams();
+        if (launcher_run(&g, -1) == LAUNCHER_PLAY) relaunch_play(g.suite_id);
+        sceKernelExitProcess(0);
         return;
     }
     cfg_load(&pre_game, &pre_cfg);
@@ -1115,11 +1094,6 @@ int main(int argc, char *argv[]) {
         }
     }
     /* Relanzamientos de la propia app (ver relaunch()). */
-    if (argc >= 2 && !strcmp(argv[1], "-ams")) {
-        log_line("MODO AMS (gestor clásico, pedido desde la biblioteca)...");
-        run_ams();
-        return 0;
-    }
     if (argc >= 3 && !strcmp(argv[1], "-play")) {
         play_direct(atoi(argv[2]));
         return 0;

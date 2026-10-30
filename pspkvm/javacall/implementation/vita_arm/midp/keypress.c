@@ -235,7 +235,8 @@ static int KeyThread(SceSize args, void *argp)
 		    }
 
 		    if (vitaKey == MULTITASK_KEY) {
-		    	javanotify_switch_to_ams();
+		    	/* Sesión 46: el AMS de PSPKVM ya no se muestra nunca
+		    	 * (abría su UI vieja encima del juego). Se traga. */
 		    	lastRawVitaKey = pad.buttons;
 		    	lastVitaKey = vitaKey;
 		    	continue;

@@ -15,7 +15,8 @@
  * en ARM EABI, independiente del tamaño de pcsl_string.
  *
  * Controles: cruceta/stick/L/R o táctil para elegir, X jugar,
- * Triángulo detalles, START gestor clásico, Círculo salir.
+ * Cuadrado ajustes, Triángulo detalles, Círculo salir. (Sesión 46: sin
+ * gestor clásico: nada de la UI de PSPKVM llega a pantalla.)
  */
 #include "launcher.h"
 #include "gamecfg.h"
@@ -82,6 +83,7 @@ static struct {
     volatile unsigned long midlet_frames;
     SceUInt64 t0;
     int frame;
+    int install;    /* pantalla de instalación en vez de carga */
 } ld;
 
 /* ======================================================================
@@ -562,6 +564,12 @@ static void fill_from_manifest(vj_game *g) {
             if (f1 && f2) {
                 char icon[128], cls[128];
                 *f2 = 0;
+                if (!g->name[0]) {
+                    char *s = line;
+                    while (*s == ' ') s++;
+                    snprintf(g->name, sizeof(g->name), "%.*s",
+                             (int)(f1 - s), s);
+                }
                 snprintf(icon, sizeof(icon), "%s", f1 + 1);
                 snprintf(cls, sizeof(cls), "%s", f2 + 1);
                 /* trim */
@@ -604,7 +612,7 @@ typedef struct {
     vj_game games[MAX_GAMES];
     vita2d_texture *icons[MAX_GAMES];
     int n;          /* juegos */
-    int sel;        /* 0..n (n = tarjeta "Gestor clásico") */
+    int sel;        /* 0..n-1 */
     float scroll;
     float pulse;
     int frame;
@@ -685,18 +693,6 @@ static void draw_initials(const char *name, float cx, float cy, float sc) {
     text(cx - text_w(sc, ini) / 2.0f, cy + 14 * sc, sc, C_WHITE, ini);
 }
 
-static void draw_gear(float cx, float cy, float r, unsigned int c,
-                      unsigned int hole) {
-    int i;
-    for (i = 0; i < 8; i++) {
-        float a = i * 0.7853982f;
-        vita2d_draw_fill_circle(cx + cosf(a) * r, cy + sinf(a) * r,
-                                r * 0.3f, c);
-    }
-    vita2d_draw_fill_circle(cx, cy, r, c);
-    vita2d_draw_fill_circle(cx, cy, r * 0.42f, hole);
-}
-
 static void card_rect(const scene *sc, int i, float *x, float *y, float *w,
                       float *h) {
     float grow = (i == sc->sel) ? 10 + sinf(sc->pulse) * 1.5f : 0;
@@ -717,7 +713,7 @@ static void draw_card(const scene *sc, int i) {
     if (selected) {
         fill_rrect(x - 4, y - 4, w + 8, h + 8, 18, C_GLOW);
     }
-    if (i < sc->n) {
+    {
         const vj_game *g = &sc->games[i];
         int hue = name_hash(g->name);
         vita2d_texture *ic = sc->icons[i];
@@ -749,16 +745,6 @@ static void draw_card(const scene *sc, int i) {
                  g->vendor[0] ? g->vendor : "Java ME", (int)w - 28);
         snprintf(meta, sizeof(meta), "%d KB", g->jar_size / 1024);
         text(x + 14, y + h - 14, 0.68f, C_ACCENT, meta);
-    } else {
-        /* tarjeta del gestor clásico */
-        fill_rrect(x, y, w, h, 14, C_PANEL);
-        draw_gear(x + w / 2, y + art / 2, 26 * (w / CARD_W), C_TEXT_2,
-                  C_PANEL);
-        text_fit(x + 14, y + art + 30, 0.95f, C_WHITE, "Gestor clásico",
-                 (int)w - 28);
-        text_fit(x + 14, y + art + 54, 0.72f, C_TEXT_2,
-                 "VM, red, teclas, instalar", (int)w - 28);
-        text(x + 14, y + h - 14, 0.68f, C_GLOW, "AMS de PSPKVM");
     }
 }
 
@@ -772,11 +758,6 @@ static void draw_selected_info(const scene *sc) {
                  g->vendor[0] ? g->vendor : "Java ME", g->jar_size / 1024,
                  g->midlets > 1 ? "varios MIDlets" : "MIDP");
         text_fit(48, y + 28, 0.8f, C_TEXT_2, buf, SCR_W - 96);
-    } else {
-        text(48, y, 1.15f, C_WHITE, "Gestor clásico");
-        text(48, y + 28, 0.8f, C_TEXT_2,
-             "Abre el administrador original de PSPKVM (ajustes de la VM, "
-             "red, mapeo de teclas).");
     }
 }
 
@@ -786,17 +767,16 @@ static void draw_bottom_bar(const scene *sc) {
     vita2d_draw_rectangle(0, 498, SCR_W, 1, RGBA8(0x2B, 0x46, 0x8C, 0xFF));
     x = 48;
     if (sc->info) {
-        x += hint(x, cy, 'x', NULL, sc->sel < sc->n ? "Jugar" : "Abrir") + 28;
+        x += hint(x, cy, 'x', NULL, "Jugar") + 28;
         x += hint(x, cy, 's', NULL, "Ajustes") + 28;
         hint(x, cy, 'o', NULL, "Volver");
         return;
     }
-    x += hint(x, cy, 'x', NULL, sc->sel < sc->n ? "Jugar" : "Abrir") + 28;
     if (sc->sel < sc->n) {
+        x += hint(x, cy, 'x', NULL, "Jugar") + 28;
         x += hint(x, cy, 's', NULL, "Ajustes") + 28;
         x += hint(x, cy, 't', NULL, "Detalles") + 28;
     }
-    x += hint(x, cy, 0, "START", "Gestor clásico") + 28;
     hint(x, cy, 'o', NULL, "Salir");
 }
 
@@ -840,12 +820,10 @@ static void draw_info_overlay(const scene *sc) {
 
 static void draw_empty_hint(const scene *sc) {
     if (sc->n) return;
-    text(48 + CARD_W + CARD_GAP + 24, CARD_Y + 96, 1.0f, C_WHITE,
-         "Todavía no hay juegos instalados");
-    text(48 + CARD_W + CARD_GAP + 24, CARD_Y + 128, 0.8f, C_TEXT_2,
+    text(48, CARD_Y + 96, 1.0f, C_WHITE, "Todavía no hay juegos instalados");
+    text(48, CARD_Y + 128, 0.8f, C_TEXT_2,
          "Copia tus .jar a ux0:data/vitaj2me/games/ y reinicia VitaJ2ME:");
-    text(48 + CARD_W + CARD_GAP + 24, CARD_Y + 152, 0.8f, C_TEXT_2,
-         "se instalan solos al arrancar.");
+    text(48, CARD_Y + 152, 0.8f, C_TEXT_2, "se instalan solos al arrancar.");
 }
 
 static void draw_scene(const scene *sc) {
@@ -855,35 +833,13 @@ static void draw_scene(const scene *sc) {
     draw_background(sc->frame);
     draw_header(sc);
     /* la seleccionada al final, por encima de sus vecinas */
-    for (i = 0; i <= sc->n; i++)
+    for (i = 0; i < sc->n; i++)
         if (i != sc->sel) draw_card(sc, i);
-    draw_card(sc, sc->sel);
+    if (sc->n) draw_card(sc, sc->sel);
     draw_empty_hint(sc);
     draw_selected_info(sc);
     draw_info_overlay(sc);
     draw_bottom_bar(sc);
-    vita2d_end_drawing();
-    vita2d_swap_buffers();
-}
-
-/* Frame final mientras arranca la JVM: queda en pantalla hasta que el
- * MIDlet pinta su primer frame. */
-static void draw_launching(const scene *sc, const char *name, float fade) {
-    int i;
-    vita2d_start_drawing();
-    vita2d_clear_screen();
-    draw_background(sc->frame);
-    vita2d_draw_rectangle(0, 0, SCR_W, SCR_H,
-                          with_alpha(C_BG_BOT, (int)(255 * fade)));
-    text((SCR_W - text_w(1.3f, name)) / 2.0f, 300, 1.3f, C_WHITE, name);
-    text((SCR_W - text_w(0.85f, "Iniciando…")) / 2.0f, 336, 0.85f,
-         C_TEXT_2, "Iniciando…");
-    for (i = 0; i < 8; i++) {
-        float a = i * 0.7853982f + sc->frame * 0.12f;
-        vita2d_draw_fill_circle(SCR_W / 2 + cosf(a) * 22,
-                                232 + sinf(a) * 22, 2.5f + i * 0.45f,
-                                with_alpha(C_GLOW, 60 + i * 24));
-    }
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
@@ -1203,7 +1159,7 @@ int launcher_game_menu(const vj_game *g) {
 
 static float target_scroll(const scene *sc) {
     float t = 48 + sc->sel * (CARD_W + CARD_GAP) + CARD_W / 2.0f - SCR_W / 2;
-    float maxs = 48 + sc->n * (CARD_W + CARD_GAP) + CARD_W + 48 - SCR_W;
+    float maxs = 48 + sc->n * (CARD_W + CARD_GAP) - CARD_GAP + 48 - SCR_W;
     if (t > maxs) t = maxs;
     if (t < 0) t = 0;
     return t;
@@ -1225,8 +1181,8 @@ int launcher_run(vj_game *out, int preselect) {
     memset(&sc, 0, sizeof(sc));
     font = vita2d_load_default_pgf();
     if (!font) {
-        vj_log("launcher: sin fuente PGF -> gestor clásico");
-        return LAUNCHER_CLASSIC;
+        vj_log("launcher: sin fuente PGF -> salir");
+        return LAUNCHER_EXIT;
     }
     sc.n = launcher_list(sc.games, MAX_GAMES);
     for (i = 0; i < sc.n; i++) {
@@ -1262,7 +1218,7 @@ int launcher_run(vj_game *out, int preselect) {
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
         if (touch.reportNum > 0 && !was_touch && !sc.info) {
             float tx = touch.report[0].x / 2.0f, ty = touch.report[0].y / 2.0f;
-            for (i = 0; i <= sc.n; i++) {
+            for (i = 0; i < sc.n; i++) {
                 float x, y, w, h;
                 card_rect(&sc, i, &x, &y, &w, &h);
                 if (tx >= x && tx < x + w && ty >= y && ty < y + h) {
@@ -1284,25 +1240,20 @@ int launcher_run(vj_game *out, int preselect) {
         } else {
             if (down & (SCE_CTRL_LEFT | SCE_CTRL_LTRIGGER) && sc.sel > 0)
                 sc.sel--;
-            if (down & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER) && sc.sel < sc.n)
+            if (down & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER) &&
+                sc.sel < sc.n - 1)
                 sc.sel++;
             if (down & SCE_CTRL_CROSS) act_play = 1;
             if ((down & SCE_CTRL_TRIANGLE) && sc.sel < sc.n) sc.info = 1;
-            if (down & SCE_CTRL_START) {
-                sc.sel = sc.n;
-                act_play = 1;
-            }
             if (down & SCE_CTRL_CIRCLE) act_back = 1;
         }
 
         if (act_back) { result = LAUNCHER_EXIT; break; }
-        if (act_play) {
-            if (sc.sel >= sc.n) { result = LAUNCHER_CLASSIC; break; }
+        if (act_play && sc.sel < sc.n) {
             if (!sc.games[sc.sel].cls[0]) {
-                vj_log("launcher: '%s' sin clase de MIDlet -> gestor "
-                       "clásico", sc.games[sc.sel].name);
-                result = LAUNCHER_CLASSIC;
-                break;
+                vj_log("launcher: '%s' sin clase de MIDlet, no se puede "
+                       "lanzar", sc.games[sc.sel].name);
+                continue;
             }
             *out = sc.games[sc.sel];
             result = LAUNCHER_PLAY;
@@ -1315,14 +1266,6 @@ int launcher_run(vj_game *out, int preselect) {
         draw_scene(&sc);
     }
 
-    /* transición */
-    if (result == LAUNCHER_CLASSIC) {
-        for (i = 1; i <= 14; i++) {
-            sc.frame++;
-            draw_launching(&sc, "Gestor clásico", i / 14.0f);
-        }
-        vj_log("launcher: abrir gestor clásico");
-    }
     vita2d_wait_rendering_done(); /* la GPU suelta iconos y atlas PGF */
     for (i = 0; i < sc.n; i++) {
         if (!sc.icons[i]) continue;
@@ -1418,8 +1361,9 @@ static void draw_loading(float fade) {
 
     /* estado real: hasta que el MIDlet empieza a pintar, arranque de
      * la VM; después, el juego ya corre y carga sus recursos */
-    status = ld.midlet_frames ? "Cargando recursos del juego"
-                              : "Arrancando la máquina virtual Java";
+    status = ld.install ? "Instalando el juego"
+             : ld.midlet_frames ? "Cargando recursos del juego"
+                                : "Arrancando la máquina virtual Java";
     text(cx - text_w(0.85f, status) / 2.0f, ty + tile + 176, 0.85f,
          C_TEXT_2, status);
     snprintf(buf, sizeof(buf), "%d s", (int)t);
@@ -1479,6 +1423,21 @@ static int hold_hook(int has_content) {
 }
 
 void launcher_preload_hold(void) {
+    vita_lcd_loading_hook = hold_hook;
+}
+
+/* Instalador (CommandLineInstaller de PSPKVM): la VM corre detrás de una
+ * pantalla nativa y NINGUNO de sus frames (UI vieja, avisos) se ve. */
+void launcher_install_start(const char *jar) {
+    static vj_game g;
+    const char *base = strrchr(jar, '/');
+    memset(&g, 0, sizeof(g));
+    snprintf(g.jar, sizeof(g.jar), "%s", jar);
+    fill_from_manifest(&g);
+    if (!g.name[0]) snprintf(g.name, sizeof(g.name), "%s", base ? base + 1 : jar);
+    snprintf(g.vendor, sizeof(g.vendor), "Instalando…");
+    ld.install = 1;
+    launcher_loading_start(&g);
     vita_lcd_loading_hook = hold_hook;
 }
 
