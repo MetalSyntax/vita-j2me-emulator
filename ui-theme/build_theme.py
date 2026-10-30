@@ -1013,24 +1013,23 @@ def backdrop(w, h):
     return im
 
 
-def splash(w, h, status="Iniciando máquina virtual…"):
+def splash(w, h, label=None):
+    """Splash de marca ESTÁTICO: sin textos de estado ni barras de
+    progreso falsas (pedido HW 041). Lo que carga de verdad lo muestra la
+    pantalla de carga animada de vita/launcher.c."""
     im = backdrop(w, h)
     k = min(w / 480.0, h / 272.0)
     icon = int(64 * k)
-    im.alpha_composite(brand_mark(icon), ((w - icon) // 2, int(h * 0.2)))
-    wordmark(im, w // 2, int(h * 0.2) + icon + int(14 * k), k,
+    top = int(h * 0.26)
+    im.alpha_composite(brand_mark(icon), ((w - icon) // 2, top))
+    wordmark(im, w // 2, top + icon + int(14 * k), k,
              sub="Java ME para PS Vita")
-    d = ImageDraw.Draw(im)
-    f = font(False, max(10, int(11 * k)))
-    tw = d.textlength(status, font=f)
-    d.text(((w - tw) / 2, h - int(30 * k)), status, font=f,
-           fill=rgb(ON_DARK_2))
-    bw = int(120 * k)
-    y = h - int(12 * k)
-    rrect(d, ((w - bw) / 2, y, (w + bw) / 2, y + 3), 1.5,
-          fill=mix(NAVY, ACCENT, 0.35))
-    rrect(d, ((w - bw) / 2, y, (w - bw) / 2 + bw * 0.38, y + 3), 1.5,
-          fill=0x7FB0FF)
+    if label:
+        d = ImageDraw.Draw(im)
+        f = font(False, max(10, int(11 * k)))
+        tw = d.textlength(label, font=f)
+        d.text(((w - tw) / 2, h - int(26 * k)), label, font=f,
+               fill=rgb(ON_DARK_2))
     return im
 
 

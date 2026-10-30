@@ -74,6 +74,9 @@ static void log_line(const char *fmt, ...);
 extern volatile unsigned long vita_jvmlog_writes;
 extern volatile unsigned long vita_jvmlog_fails;
 extern volatile int vita_jvmlog_lasterr;
+extern volatile unsigned long vita_jvmlog_empty;
+extern volatile unsigned long vita_jvmlog_bytes;
+extern volatile unsigned long long vita_jvmlog_io_us;
 int vita_event_cond_uid(void);
 void javanotify_key_event(int key, int type);
 #define VJ_KEY_DEBUG_TRACE (-22) /* JAVACALL_KEY_DEBUG_TRACE */
@@ -120,23 +123,29 @@ static int hb_thread(SceSize args, void *argp) {
             int in_queue = (wid != 0 && wid == vita_event_cond_uid());
             log_line("HB +%us: flush=%lu (+%lu ~%lu FPS) keys=%lu (+%lu) "
                      "main: st=%u wait=0x%x/0x%08x%s clocks=%llu (+%llu) "
-                     "jvmlog=%lu fail=%lu err=0x%08x",
+                     "jvmlog=%lu (vacias %lu, %lu B, io %llu ms) "
+                     "fail=%lu err=0x%08x",
                      ticks, f, f - last_flush, (f - last_flush) / 10,
                      k, k - last_keys,
                      st, wt, (unsigned)wid,
                      in_queue ? "(cola eventos)" : "",
                      clocks, clocks - last_clocks,
-                     vita_jvmlog_writes, vita_jvmlog_fails,
+                     vita_jvmlog_writes, vita_jvmlog_empty,
+                     vita_jvmlog_bytes, vita_jvmlog_io_us / 1000,
+                     vita_jvmlog_fails,
                      (unsigned)vita_jvmlog_lasterr);
-            if (f != last_flush) {
+            /* HW 041: el juego corría a ~1 FPS fuera de la cola. Lento
+             * (<20 frames en 10 s) durante 30 s también pide volcado:
+             * la pila de los hilos Java dice en qué se va el tiempo. */
+            if (f != last_flush && (f - last_flush) >= 20) {
                 idle_secs = 0;
                 armed = 1;
-            } else if (in_queue && f > 1) {
+            } else if (f > 1 && (in_queue || f != last_flush)) {
                 idle_secs += 10;
             }
             if (armed && dumps < HB_MAX_DUMPS &&
                 idle_secs >= HB_IDLE_DUMP_SECS) {
-                log_line("HB: VM ocioso %us en la cola sin pintar -> "
+                log_line("HB: VM ocioso o lento (<2 FPS) %us -> "
                          "volcado pss automatico #%d (ver jvm-%03d.log)",
                          idle_secs, dumps + 1, vitaj2me_session_id);
                 javanotify_key_event(VJ_KEY_DEBUG_TRACE, VJ_KEYPRESSED);
@@ -865,6 +874,7 @@ int main(int argc, char *argv[]) {
         if (choice == LAUNCHER_PLAY) {
             log_line("MODO JUEGO DIRECTO (sin AMS)...");
             vita_start_game(&game);
+            launcher_loading_start();
             log_line("JavaTask() >> (toma el hilo principal)");
             JavaTask();
             log_line("<< JavaTask() retornó: el juego terminó");

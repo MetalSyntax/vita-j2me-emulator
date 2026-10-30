@@ -24,6 +24,8 @@
 #include <psp2/rtc.h>
 #include <psp2/power.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/cpu.h>
 #include <vita2d.h>
 #include <zlib.h>
 
@@ -67,6 +69,17 @@
 #define ART_H 168
 
 static vita2d_pgf *font;
+
+/* Estado de la pantalla de carga (ver launcher_loading_start). */
+static struct {
+    vj_game game;
+    vita2d_texture *icon;
+    SceUID thread;
+    volatile int stop;
+    volatile unsigned long midlet_frames;
+    SceUInt64 t0;
+    int frame;
+} ld;
 
 /* ======================================================================
  * Primitivas
@@ -858,23 +871,178 @@ int launcher_run(vj_game *out) {
         draw_scene(&sc);
     }
 
-    /* transición + frame de espera */
-    if (result != LAUNCHER_EXIT) {
-        const char *nm = result == LAUNCHER_PLAY ? out->name
-                                                 : "Gestor clásico";
+    /* transición */
+    if (result == LAUNCHER_CLASSIC) {
         for (i = 1; i <= 14; i++) {
             sc.frame++;
-            draw_launching(&sc, nm, i / 14.0f);
+            draw_launching(&sc, "Gestor clásico", i / 14.0f);
         }
-        vj_log("launcher: %s", result == LAUNCHER_PLAY ?
-               "lanzar juego directo" : "abrir gestor clásico");
+        vj_log("launcher: abrir gestor clásico");
     }
     vita2d_wait_rendering_done(); /* la GPU suelta iconos y atlas PGF */
-    for (i = 0; i < sc.n; i++)
-        if (sc.icons[i]) vita2d_free_texture(sc.icons[i]);
+    for (i = 0; i < sc.n; i++) {
+        if (!sc.icons[i]) continue;
+        /* el icono del juego elegido lo usa la pantalla de carga */
+        if (result == LAUNCHER_PLAY && i == sc.sel) {
+            ld.icon = sc.icons[i];
+            continue;
+        }
+        vita2d_free_texture(sc.icons[i]);
+    }
+    if (result == LAUNCHER_PLAY) {
+        ld.game = *out;
+        ld.frame = sc.frame;
+        vj_log("launcher: lanzar juego directo");
+        return result;  /* fuente e icono siguen vivos: launcher_loading_start */
+    }
     vita2d_free_pgf(font);
     font = NULL;
     /* lcd.c presenta sin esperar vblank (bug #24): restaurar. */
     vita2d_set_vblank_wait(0);
     return result;
+}
+
+/* ======================================================================
+ * Pantalla de carga dinámica (mientras arranca el MIDlet)
+ *
+ * Hilo propio en el núcleo de usuario 2 (la JVM vive en otro): anima de
+ * verdad mientras la JVM trabaja. lcd.c no presenta los frames de Java
+ * mientras sean un color liso (vita_lcd_loading_hook) y, al primer frame
+ * con contenido, llama al hook: se para este hilo, se libera todo y la
+ * JVM toma la pantalla. Nunca dibujan los dos a la vez.
+ * ====================================================================== */
+
+extern int (*vita_lcd_loading_hook)(int has_content);
+extern volatile unsigned long vita_jvmlog_bytes;
+
+#define LOADING_MAX_US (120ull * 1000 * 1000)  /* luego: pantalla real */
+
+static void draw_loading(float fade) {
+    scene bg;
+    float t = (float)((sceKernelGetProcessTimeWide() - ld.t0) / 1000000.0);
+    float cx = SCR_W / 2.0f, tile = 132, ty = 124;
+    int hue = name_hash(ld.game.name), i;
+    char buf[96];
+    const char *status;
+
+    memset(&bg, 0, sizeof(bg));
+    bg.frame = ld.frame;
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    draw_background(&bg);
+    /* icono del juego con halo que respira */
+    {
+        float glow = 10 + sinf(ld.frame * 0.06f) * 4;
+        fill_rrect(cx - tile / 2 - glow, ty - glow, tile + glow * 2,
+                   tile + glow * 2, 30 + glow,
+                   with_alpha(C_GLOW, 40));
+    }
+    fill_rrect(cx - tile / 2, ty, tile, tile, 28, art_top[hue]);
+    if (ld.icon) {
+        float iw = vita2d_texture_get_width(ld.icon);
+        float ih = vita2d_texture_get_height(ld.icon);
+        float sc = (tile - 36) / (iw > ih ? iw : ih);
+        fill_rrect(cx - tile / 2 + 12, ty + 12, tile - 24, tile - 24, 20,
+                   C_WHITE);
+        vita2d_draw_texture_scale(ld.icon, cx - iw * sc / 2,
+                                  ty + (tile - ih * sc) / 2, sc, sc);
+    } else {
+        draw_initials(ld.game.name, cx, ty + tile / 2 - 8, 2.0f);
+    }
+    text_fit(cx - text_w(1.3f, ld.game.name) / 2.0f, ty + tile + 52, 1.3f,
+             C_WHITE, ld.game.name, SCR_W - 96);
+    if (ld.game.vendor[0])
+        text(cx - text_w(0.85f, ld.game.vendor) / 2.0f, ty + tile + 80,
+             0.85f, C_TEXT_2, ld.game.vendor);
+
+    /* spinner: arco que gira y cambia de longitud */
+    {
+        float a0 = ld.frame * 0.11f;
+        float len = 1.2f + sinf(ld.frame * 0.045f) * 0.9f;
+        float r = 15, sy = ty + tile + 124;
+        int n = 28;
+        for (i = 0; i < n; i++) {
+            float a = 6.2831853f * i / n;
+            vita2d_draw_fill_circle(cx + cosf(a) * r, sy + sinf(a) * r, 1.6f,
+                                    with_alpha(C_TEXT_3, 90));
+        }
+        for (i = 0; i <= 24; i++) {
+            float a = a0 + len * i / 24;
+            vita2d_draw_fill_circle(cx + cosf(a) * r, sy + sinf(a) * r, 2.4f,
+                                    C_GLOW);
+        }
+    }
+
+    /* estado real: hasta que el MIDlet empieza a pintar, arranque de
+     * la VM; después, el juego ya corre y carga sus recursos */
+    status = ld.midlet_frames ? "Cargando recursos del juego"
+                              : "Arrancando la máquina virtual Java";
+    text(cx - text_w(0.85f, status) / 2.0f, ty + tile + 176, 0.85f,
+         C_TEXT_2, status);
+    snprintf(buf, sizeof(buf), "%d s", (int)t);
+    text(cx - text_w(0.7f, buf) / 2.0f, ty + tile + 202, 0.7f, C_TEXT_3,
+         buf);
+
+    if (fade < 1.0f)
+        vita2d_draw_rectangle(0, 0, SCR_W, SCR_H,
+                              with_alpha(C_BG_BOT, (int)(255 * (1 - fade))));
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+}
+
+static int loading_thread(SceSize args, void *argp) {
+    int i;
+    (void)args; (void)argp;
+    vita2d_set_vblank_wait(1);
+    for (i = 1; i <= 12 && !ld.stop; i++) {
+        ld.frame++;
+        draw_loading(i / 12.0f);
+    }
+    while (!ld.stop) {
+        ld.frame++;
+        draw_loading(1.0f);
+    }
+    vita2d_wait_rendering_done();
+    if (ld.icon) vita2d_free_texture(ld.icon);
+    ld.icon = NULL;
+    vita2d_free_pgf(font);
+    font = NULL;
+    vita2d_set_vblank_wait(0);  /* lcd.c presenta sin vblank (bug #24) */
+    return 0;
+}
+
+/* Lo llama lcd.c (hilo de la JVM) en cada flush mientras carga. */
+static int loading_hook(int has_content) {
+    int timeout = (sceKernelGetProcessTimeWide() - ld.t0) > LOADING_MAX_US;
+    if (!has_content && !timeout) {
+        ld.midlet_frames++;
+        return 1;
+    }
+    ld.stop = 1;
+    sceKernelWaitThreadEnd(ld.thread, NULL, NULL);
+    sceKernelDeleteThread(ld.thread);
+    vj_log("carga: %s tras %d s (%lu frames vacíos del MIDlet)",
+           has_content ? "primer frame con contenido" : "tiempo agotado",
+           (int)((sceKernelGetProcessTimeWide() - ld.t0) / 1000000),
+           ld.midlet_frames);
+    return 0;
+}
+
+void launcher_loading_start(void) {
+    if (!font) return;
+    ld.stop = 0;
+    ld.midlet_frames = 0;
+    ld.t0 = sceKernelGetProcessTimeWide();
+    ld.thread = sceKernelCreateThread("vj_loading", loading_thread,
+                                      0x10000100, 0x8000, 0,
+                                      SCE_KERNEL_CPU_MASK_USER_2, NULL);
+    if (ld.thread < 0) {
+        vj_log("carga: no se pudo crear el hilo (0x%08x)", ld.thread);
+        vita2d_free_pgf(font);
+        font = NULL;
+        vita2d_set_vblank_wait(0);
+        return;
+    }
+    vita_lcd_loading_hook = loading_hook;
+    sceKernelStartThread(ld.thread, 0, NULL);
 }

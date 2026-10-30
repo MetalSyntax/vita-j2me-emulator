@@ -15,6 +15,7 @@
 
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
+#include <psp2/kernel/processmgr.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,25 +41,51 @@ static int log_channel_file = 0;
 volatile unsigned long vita_jvmlog_writes = 0;
 volatile unsigned long vita_jvmlog_fails = 0;
 volatile int vita_jvmlog_lasterr = 0;
+/* Sesión 41: con el juego corriendo, 3461 llamadas en 100 s dejaron un
+ * fichero de 6 KB (casi todas cadenas vacías) y el hilo de la JVM usó
+ * ~4% de CPU: vivía bloqueado en sceIoOpen/Close sobre la memory card
+ * (1 FPS). Ahora el fd se abre UNA vez y "" no toca el disco. Estos
+ * contadores lo miden en el HB: llamadas vacías, bytes y µs de E/S. */
+volatile unsigned long vita_jvmlog_empty = 0;
+volatile unsigned long vita_jvmlog_bytes = 0;
+volatile unsigned long long vita_jvmlog_io_us = 0;
+
+static SceUID log_fd = -1;
 
 static void log_to_file(const char *s) {
-    char path[128];
-    if (vitaj2me_session_id > 0) {
-        snprintf(path, sizeof(path), "%s/jvm-%03d.log",
-                 VITA_JVM_LOG_DIR, vitaj2me_session_id);
-    } else {
-        snprintf(path, sizeof(path), "%s", VITA_JVM_LOG_LEGACY);
-    }
-    SceUID fd = sceIoOpen(path,
-        SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+    size_t n = strlen(s);
+    SceUInt64 t0;
     vita_jvmlog_writes++;
-    if (fd >= 0) {
-        sceIoWrite(fd, s, (SceSize)strlen(s));
-        sceIoClose(fd);
-    } else {
-        vita_jvmlog_fails++;
-        vita_jvmlog_lasterr = (int)fd;
+    if (n == 0) {
+        vita_jvmlog_empty++;
+        return;
     }
+    t0 = sceKernelGetProcessTimeWide();
+    if (log_fd < 0) {
+        char path[128];
+        if (vitaj2me_session_id > 0) {
+            snprintf(path, sizeof(path), "%s/jvm-%03d.log",
+                     VITA_JVM_LOG_DIR, vitaj2me_session_id);
+        } else {
+            snprintf(path, sizeof(path), "%s", VITA_JVM_LOG_LEGACY);
+        }
+        log_fd = sceIoOpen(path,
+            SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+        if (log_fd < 0) {
+            vita_jvmlog_fails++;
+            vita_jvmlog_lasterr = (int)log_fd;
+            log_fd = -1;
+            return;
+        }
+    }
+    /* sceIoWrite es una syscall sin buffer de usuario: lo escrito queda
+     * en la tarjeta aunque el proceso muera después (dumps). */
+    if (sceIoWrite(log_fd, s, (SceSize)n) < 0) {
+        vita_jvmlog_fails++;
+    } else {
+        vita_jvmlog_bytes += n;
+    }
+    vita_jvmlog_io_us += sceKernelGetProcessTimeWide() - t0;
 }
 
 /**
@@ -71,6 +98,7 @@ void javacall_print(const char *s) {
     /* Fichero PRIMERO: el jvm.log es la evidencia de triage y no debe
      * depender de que el stdout de newlib vuelva. */
     if (log_channel_startup || log_channel_file) log_to_file(s);
+    if (!s[0]) return;  /* nada que imprimir: no tocar stdout tampoco */
     if (log_channel_consle) printf("%s", s);       /* consola USB */
     if (log_channel_stdout && !log_channel_consle) printf("%s", s);
 

@@ -59,6 +59,41 @@ static int vita_vblank_wait = -1; /* espejo de lo seteado (sin getter) */
  * y lo lee el hilo HB sin lock (estadística, carreras benignas). */
 volatile unsigned long vita_flush_count = 0;
 
+/* Pantalla de carga nativa del frontend (vita/launcher.c, sesión 41).
+ * Mientras esté puesto, cada flush pregunta al hook si ya hay contenido:
+ * si el framebuffer de Java es todavía uniforme (negro de arranque) el
+ * frame NO se presenta y la animación de carga sigue en pantalla; al
+ * primer frame con contenido el hook detiene su hilo de dibujo (vuelve
+ * con él terminado) y desde ahí manda la JVM. hook(1) también se usa
+ * para pararla antes de cualquier reinicio de vita2d (resize). */
+int (*vita_lcd_loading_hook)(int has_content) = 0;
+
+/* ¿El frame tiene algo distinto de un color liso? Muestreo 16x16. */
+static int vita_frame_has_content(void) {
+    const unsigned short *px = (const unsigned short *)scbuff;
+    unsigned short first = px[0];
+    int x, y;
+    for (y = 0; y < 16; y++) {
+        int yy = (vscr_h - 1) * y / 15;
+        for (x = 0; x < 16; x++) {
+            int xx = (vscr_w - 1) * x / 15;
+            if (px[yy * vscr_w + xx] != first) return 1;
+        }
+    }
+    return 0;
+}
+
+static int vita_loading_should_skip(int force_stop) {
+    int (*hook)(int) = vita_lcd_loading_hook;
+    if (!hook) return 0;
+    if (!force_stop && hook(vita_frame_has_content())) {
+        return 1;  /* sigue la pantalla de carga: no presentar */
+    }
+    if (force_stop) hook(1);
+    vita_lcd_loading_hook = 0;
+    return 0;
+}
+
 static void vita_apply_filter(void) {
     if (!j2me_tex) return;
     if (tex_linear) {
@@ -274,6 +309,7 @@ javacall_pixel* javacall_lcd_get_screen(javacall_lcd_screen_type screenType,
                                         javacall_lcd_color_encoding_type* colorEncoding){
     (void)screenType;
     if (resized) {
+        vita_loading_should_skip(1);  /* vita2d_fini: parar la carga antes */
         javacall_lcd_finalize();
         javacall_lcd_init();
         resized = 0;
@@ -325,6 +361,10 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
     int draw_w, draw_h; /* dimensiones del contenido subido */
 
     if (!j2me_tex || !_enable_lcd_flush) {
+        return JAVACALL_OK;
+    }
+
+    if (vita_loading_should_skip(0)) {
         return JAVACALL_OK;
     }
 

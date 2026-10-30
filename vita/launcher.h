@@ -28,6 +28,10 @@ enum {
  * el usuario elige; deja en pantalla un frame "Iniciando…". */
 int launcher_run(vj_game *out);
 
+/* Tras LAUNCHER_PLAY y justo antes de JavaTask(): pantalla de carga
+ * animada en su propio hilo hasta que el MIDlet pinta contenido. */
+void launcher_loading_start(void);
+
 /* Lo implementa main.c (escribe en bringup-NNN.log). */
 void vj_log(const char *fmt, ...);
 
