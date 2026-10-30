@@ -1,5 +1,11 @@
 # vita-j2me-emulator — Emulador J2ME nativo para PS Vita
 
+> **Antes de tocar nada, sigue `.claude/skills/vitaj2me-dev/SKILL.md`**
+> (skill `vitaj2me-dev`): compilar, desplegar (`toolkit/deploy.py`),
+> diagnosticar, parchear Java (`toolkit/java_patch.py`), ajustes en 3
+> idiomas, documentación (`port_progress.md`, README, RELEASE), commits y
+> release. Responde al usuario en español.
+
 **Este proyecto es independiente del port de arriba.** El `CLAUDE.md` de
 `Soul-Of-Darkness-vita/` (la carpeta padre) describe un port Android vía
 SoLoader/FalsoJNI y dice "usar **psvita-port-toolkit**, la herramienta

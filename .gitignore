@@ -66,3 +66,4 @@ pspkvm/midp/build/javacall_vita/output/
 !/_prebuilt/**/*.zip
 !/_prebuilt/**/*.a
 release/
+toolkit/tools/
