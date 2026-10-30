@@ -50,6 +50,11 @@ volatile unsigned long vita_key_count = 0;
 #define DEBUG_TRACE_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_SELECT)
 #define MENU_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_START)
 volatile int vita_menu_request = 0;
+/* L+R+△: mostrar/ocultar el teclado virtual (lo atiende vita/gamecfg.c). */
+volatile int vita_pad_toggle_request = 0;
+/* L+R+X: salir del juego. El frontend lo pone (vuelve a la biblioteca);
+ * sin él, el apagado de PSPKVM de siempre. */
+void (*vita_exit_hook)(void) = 0;
 #define NETWORK_KEY (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_SQUARE)
 #define SHIFT_KEY1 SCE_CTRL_LTRIGGER
 #define SHIFT_KEY2 SCE_CTRL_RTRIGGER
@@ -228,15 +233,17 @@ static int KeyThread(SceSize args, void *argp)
 		    }
 
 		    if (vitaKey == EXIT_KEY) {
-		    	javanotify_shutdown_current();
+		    	if (vita_exit_hook) vita_exit_hook();
+		    	else javanotify_shutdown_current();
 		    	lastRawVitaKey = pad.buttons;
 		    	lastVitaKey = vitaKey;
 		    	continue;
 		    }
 
 		    if (vitaKey == MULTITASK_KEY) {
-		    	/* Sesión 46: el AMS de PSPKVM ya no se muestra nunca
-		    	 * (abría su UI vieja encima del juego). Se traga. */
+		    	/* Sesión 46: el AMS de PSPKVM ya no se muestra nunca;
+		    	 * L+R+△ es ahora mostrar/ocultar el teclado virtual. */
+		    	vita_pad_toggle_request = 1;
 		    	lastRawVitaKey = pad.buttons;
 		    	lastVitaKey = vitaKey;
 		    	continue;

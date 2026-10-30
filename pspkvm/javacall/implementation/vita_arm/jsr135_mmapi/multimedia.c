@@ -39,7 +39,9 @@ extern "C" {
  *  - MIDI (sesión 45): TinySoundFont (tsf.h/tml.h, MIT) con el banco GM
  *    ux0:data/vitaj2me/lib/gm.sf2, sintetizado en streaming en el hilo
  *    del reproductor (nada de renderizar la canción entera de golpe).
- *  - MP3/AAC/AMR/vídeo/grabación: NO implementados (FAIL seguro).
+ *  - MP3 (sesión 48): libmpg123 de VitaSDK en modo feed, decodificado en
+ *    streaming a 48 kHz estéreo (MPG123_FORCE_RATE) en el mismo hilo.
+ *  - AAC/AMR/vídeo/grabación: NO implementados (FAIL seguro).
  * ===================================================================== */
 #include <stdlib.h>
 #include <string.h>
@@ -52,11 +54,13 @@ extern "C" {
 #include "tsf.h"
 #define TML_IMPLEMENTATION
 #include "tml.h"
+#include <mpg123.h>
 
 #define VITA_AUDIO_FREQ   48000
 #define VITA_AUDIO_GRAIN  1024   /* samples por sceAudioOutOutput */
 #define VITA_PLAYER_WAV   1
 #define VITA_PLAYER_MIDI  2
+#define VITA_PLAYER_MP3   3
 #define VITA_GM_BANK      "ux0:data/vitaj2me/lib/gm.sf2"
 #define VITA_MIDI_BLOCK   64     /* resolución temporal de eventos MIDI */
 
@@ -82,6 +86,9 @@ typedef struct {
     tml_message *midi, *midiCur;
     double midiMs;
     unsigned int midiLenMs;
+    /* MP3 */
+    mpg123_handle *mp3;
+    long mp3Frames;        /* frames de 48 kHz ya emitidos */
     short grain[VITA_AUDIO_GRAIN * 2]; /* propio: antes era static compartido */
 } vita_player_t;
 
@@ -151,6 +158,59 @@ static int vita_midi_prepare(vita_player_t *p) {
         vita_midi_rewind(p);
     }
     return 0;
+}
+
+static void vita_mp3_close(vita_player_t *p) {
+    if (p->mp3) {
+        mpg123_delete(p->mp3);
+        p->mp3 = NULL;
+    }
+    p->mp3Frames = 0;
+}
+
+/* Decodificador en modo feed con todo el fichero ya entregado: el
+ * buffering de Java trae el .mp3 completo. Rebobinar = recrearlo. */
+static int vita_mp3_prepare(vita_player_t *p) {
+    static int inited = 0;
+    int err = 0;
+    if (p->mp3) return 0;
+    if (!inited) {
+        mpg123_init();
+        inited = 1;
+    }
+    p->mp3 = mpg123_new(NULL, &err);
+    if (!p->mp3) return -1;
+    mpg123_param(p->mp3, MPG123_FLAGS, MPG123_FORCE_STEREO | MPG123_QUIET, 0);
+    mpg123_param(p->mp3, MPG123_FORCE_RATE, VITA_AUDIO_FREQ, 0);
+    mpg123_format_none(p->mp3);
+    if (mpg123_format(p->mp3, VITA_AUDIO_FREQ, MPG123_STEREO,
+                      MPG123_ENC_SIGNED_16) != MPG123_OK ||
+        mpg123_open_feed(p->mp3) != MPG123_OK ||
+        mpg123_feed(p->mp3, p->data, (size_t)p->dataLen) != MPG123_OK) {
+        javacall_printf("VITAJ2ME-MP3: no se pudo abrir (%s)\n",
+                        mpg123_strerror(p->mp3));
+        vita_mp3_close(p);
+        return -1;
+    }
+    p->mp3Frames = 0;
+    return 0;
+}
+
+/* Rinde un grano; 1 = fin del fichero. */
+static int vita_mp3_render(vita_player_t *p) {
+    unsigned char *out = (unsigned char *)p->grain;
+    size_t want = sizeof(p->grain), got = 0;
+    int tries = 0;
+    while (got < want && tries++ < 64) {
+        size_t done = 0;
+        int r = mpg123_read(p->mp3, out + got, want - got, &done);
+        got += done;
+        if (r == MPG123_NEW_FORMAT || (r == MPG123_OK && done)) continue;
+        if (r != MPG123_OK) break;  /* NEED_MORE/DONE/ERR: no queda nada */
+    }
+    if (got < want) memset(out + got, 0, want - got);
+    p->mp3Frames += (long)(got / 4);
+    return got == 0;
 }
 
 /* Rinde un grano; devuelve 1 cuando la canción (y su cola) terminó. */
@@ -277,20 +337,24 @@ static int vita_player_thread(SceSize args, void *argp) {
         vita_player_lock(p);
         int playing = p->state == 1 && !vita_media_paused &&
             (p->kind == VITA_PLAYER_MIDI ? p->synth != NULL
-                                         : (p->pcm && p->posFrames < p->frames));
+             : p->kind == VITA_PLAYER_MP3 ? p->mp3 != NULL
+                                          : (p->pcm && p->posFrames < p->frames));
         vita_player_unlock(p);
         if (!playing) {
             sceKernelDelayThreadCB(10000); /* 10ms */
             continue;
         }
-        if (p->kind == VITA_PLAYER_MIDI) {
+        if (p->kind == VITA_PLAYER_MIDI || p->kind == VITA_PLAYER_MP3) {
             int ended;
             vita_player_lock(p);
-            ended = vita_midi_render(p);
-            if (ended) {
-                p->state = 0;
-                vita_midi_rewind(p);
+            if (p->kind == VITA_PLAYER_MIDI) {
+                ended = vita_midi_render(p);
+                if (ended) vita_midi_rewind(p);
+            } else {
+                ended = vita_mp3_render(p);
+                if (ended) vita_mp3_close(p);
             }
+            if (ended) p->state = 0;
             vita_player_unlock(p);
             sceAudioOutOutput(p->port, grain);
             if (ended) {
@@ -432,6 +496,11 @@ javacall_handle javacall_media_create(javacall_int64 playerId,
                !strcmp(mimeBuf, "audio/x-midi")) {
         if (!vita_gm_get()) return 0;
         kind = VITA_PLAYER_MIDI;
+    } else if (!strcmp(mimeBuf, JAVACALL_AUDIO_MP3_MIME) ||
+               !strcmp(mimeBuf, JAVACALL_AUDIO_MP3_MIME_2) ||
+               !strcmp(mimeBuf, "audio/mpeg3") ||
+               !strcmp(mimeBuf, "audio/x-mp3")) {
+        kind = VITA_PLAYER_MP3;
     } else {
         javacall_printf("javacall_media_create: mime no soportado: %s\n", mimeBuf);
         return 0;
@@ -510,6 +579,7 @@ javacall_result javacall_media_destroy(javacall_handle handle){
     }
     vita_player_close_port(p);
     if (p->synth) tsf_close(p->synth);
+    vita_mp3_close(p);
     if (p->midi) tml_free(p->midi);
     free(p->data);
     free(p->pcm);
@@ -595,6 +665,7 @@ long javacall_media_do_buffering(javacall_handle handle, const void* buffer, lon
     if (offset == 0) {
         p->dataLen = 0; /* nuevo stream */
         if (p->midi) { tml_free(p->midi); p->midi = p->midiCur = NULL; }
+        vita_mp3_close(p);
         free(p->pcm);
         p->pcm = NULL;
         p->frames = 0;
@@ -664,6 +735,11 @@ javacall_result javacall_media_start(javacall_handle handle) {
             javacall_printf("javacall_media_start: MIDI inválido\n");
             return JAVACALL_FAIL;
         }
+    } else if (p->kind == VITA_PLAYER_MP3) {
+        if (vita_mp3_prepare(p) != 0) {
+            vita_player_unlock(p);
+            return JAVACALL_FAIL;
+        }
     } else if (!p->pcm) {
         if (vita_parse_wav(p) != 0) {
             vita_player_unlock(p);
@@ -697,6 +773,7 @@ javacall_result javacall_media_stop(javacall_handle handle) {
     p->state = 0;
     p->posFrames = 0;
     if (p->synth) vita_midi_rewind(p);
+    vita_mp3_close(p);
     vita_player_unlock(p);
     return JAVACALL_OK;
 }
@@ -752,6 +829,9 @@ long javacall_media_get_time(javacall_handle handle) {
     if (p && p->kind == VITA_PLAYER_MIDI) {
         return p->midi ? (long)p->midiMs : -1;
     }
+    if (p && p->kind == VITA_PLAYER_MP3) {
+        return (long)(p->mp3Frames * 1000 / VITA_AUDIO_FREQ);
+    }
     if (!p || !p->pcm) {
         return -1;
     }
@@ -780,6 +860,14 @@ long javacall_media_set_time(javacall_handle handle, long ms) {
         }
         vita_player_unlock(p);
         return ms;
+    }
+    if (p && p->kind == VITA_PLAYER_MP3) {
+        if (ms != 0) return -1;  /* solo rebobinar (lo único que usan) */
+        vita_player_lock(p);
+        vita_mp3_close(p);
+        if (p->state == 1) vita_mp3_prepare(p);
+        vita_player_unlock(p);
+        return 0;
     }
     if (!p || !p->pcm || ms < 0) {
         return -1;

@@ -64,6 +64,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--pic-veneer")
 set(VITAJ2ME_VM_WRAPS
   _ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop
   pcsl_file_getpathseparator
+  Java_java_lang_Thread_sleep
 )
 foreach(sym ${VITAJ2ME_VM_WRAPS})
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--wrap=${sym}")
@@ -100,6 +101,7 @@ target_link_libraries(${PROJECT_NAME}
   -Wl,--end-group
   -Wl,--whole-archive pthread -Wl,--no-whole-archive
   vita2d
+  mpg123
   freetype
   png16
   jpeg

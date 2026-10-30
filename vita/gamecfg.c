@@ -43,6 +43,11 @@ extern int javacall_lcd_get_screen_height(void);
 extern javacall_keymap vita_keymap_custom[32];
 extern int vita_keymap_custom_n;
 extern int suspend_key_input;
+extern int vita_lcd_rotate;
+extern int vita_lcd_mirror;
+extern int vita_lcd_fps_cap;
+extern int vita_sleep_pct;
+extern volatile int vita_pad_toggle_request;
 
 /* Resoluciones típicas de móviles Java (máximo 640: tamaño del offscreen). */
 const int vj_res[][2] = {
@@ -143,6 +148,13 @@ void cfg_load(const vj_game *g, vj_cfg *c) {
                 c->keypad = VJ_PAD_AUTO;
         } else if (!strcmp(line, "touch")) {
             c->touch = atoi(v) ? 1 : 0;
+        } else if (!strcmp(line, "rotate")) {
+            c->rotate = atoi(v) & 3;
+        } else if (!strcmp(line, "mirror")) {
+            c->mirror = atoi(v) & 3;
+        } else if (!strcmp(line, "speed")) {
+            c->speed = atoi(v);
+            if (c->speed < 0 || c->speed > 2) c->speed = 0;
         } else if (!strcmp(line, "map")) {
             char *p = v;
             for (i = 0; i < VJ_BTN_N && *p; i++) {
@@ -169,8 +181,9 @@ void cfg_save(const vj_game *g, const vj_cfg *c) {
         fprintf(f, "res=%dx%d\n", vj_res[c->res - 1][0], vj_res[c->res - 1][1]);
     else
         fprintf(f, "res=auto\n");
-    fprintf(f, "scale=%d\nfilter=%d\nkeypad=%d\ntouch=%d\nmap=", c->scale,
-            c->filter, c->keypad, c->touch);
+    fprintf(f, "scale=%d\nfilter=%d\nkeypad=%d\ntouch=%d\nrotate=%d\n"
+            "mirror=%d\nspeed=%d\nmap=", c->scale, c->filter, c->keypad,
+            c->touch, c->rotate, c->mirror, c->speed);
     for (i = 0; i < VJ_BTN_N; i++)
         fprintf(f, i ? ",%d" : "%d", c->map[i]);
     fprintf(f, "\n");
@@ -266,14 +279,24 @@ static void dest_in(const vj_cfg *c, int gw, int gh, const float *a,
     d[1] = a[1] + (a[3] - d[3]) / 2;
 }
 
-void cfg_layout(const vj_cfg *c, vj_layout *lo) {
+/* L+R+△ en juego: -1 = lo que diga el ajuste, 0 oculto, 1 visible. */
+static int pad_force = -1;
+
+static void layout_ex(const vj_cfg *c, vj_layout *lo, int force) {
     int gw, gh, mode = c->keypad;
     memset(lo, 0, sizeof(*lo));
     cfg_screen(c, &gw, &gh);
+    if (c->rotate & 1) {  /* lo que se ve en la Vita es la imagen girada */
+        int t = gw;
+        gw = gh;
+        gh = t;
+    }
     /* Auto: teclado a los lados solo si el juego es vertical o cuadrado
      * (ahí sobra pantalla); en horizontal el juego ocupa todo. */
     if (mode == VJ_PAD_AUTO)
         mode = gw * 100 < gh * 115 ? VJ_PAD_BOTH : VJ_PAD_OFF;
+    if (force == 0) mode = VJ_PAD_OFF;
+    if (force == 1 && mode == VJ_PAD_OFF) mode = VJ_PAD_BOTH;
 
     if (mode == VJ_PAD_BOTH) {
         float side = (SCR_W - gw * (float)SCR_H / gh) / 2;
@@ -302,11 +325,49 @@ void cfg_layout(const vj_cfg *c, vj_layout *lo) {
     dest_in(c, gw, gh, lo->area, lo->dest);
 }
 
+void cfg_layout(const vj_cfg *c, vj_layout *lo) {
+    layout_ex(c, lo, -1);
+}
+
+/* Una dirección vista en la pantalla de la Vita -> la del juego, según
+ * la rotación/espejo (misma transformación que vita_transform en lcd.c).
+ * Las teclas que no son dirección pasan igual. */
+static int game_key(int code, int rot, int mirror) {
+    static const int dirs[4][3] = {  /* código, dx, dy */
+        {JAVACALL_KEY_UP, 0, -1}, {JAVACALL_KEY_DOWN, 0, 1},
+        {JAVACALL_KEY_LEFT, -1, 0}, {JAVACALL_KEY_RIGHT, 1, 0},
+    };
+    static const int nums[4] = {'2', '8', '4', '6'};
+    int i, num = 0, du = 0, dv = 0, dx, dy;
+    for (i = 0; i < 4; i++) {
+        if (code == dirs[i][0] || code == nums[i]) {
+            num = code == nums[i];
+            du = dirs[i][1];
+            dv = dirs[i][2];
+            break;
+        }
+    }
+    if (i == 4 || (!rot && !mirror)) return code;
+    if (mirror & 1) du = -du;
+    if (mirror & 2) dv = -dv;
+    switch (rot) {
+    case 1: dx = dv; dy = -du; break;
+    case 2: dx = -du; dy = -dv; break;
+    case 3: dx = -dv; dy = du; break;
+    default: dx = du; dy = dv; break;
+    }
+    for (i = 0; i < 4; i++)
+        if (dirs[i][1] == dx && dirs[i][2] == dy)
+            return num ? nums[i] : dirs[i][0];
+    return code;
+}
+
 /* ======================================================================
  * En juego: overlay + táctil
  * ====================================================================== */
 
 static vj_layout cur;
+static vj_cfg cur_cfg;  /* lo último aplicado (para L+R+△) */
 static int cur_touch;
 static volatile unsigned char key_down[VJ_PAD_MAX];
 static vita2d_pgf *pad_font;
@@ -375,6 +436,20 @@ static int touch_thread(SceSize args, void *argp) {
         sceKernelDelayThread(16 * 1000);
         /* Biblioteca o pantalla de carga todavía delante: nada al MIDlet. */
         if (vita_lcd_loading_hook || suspend_key_input) continue;
+        if (vita_pad_toggle_request) {
+            vita_pad_toggle_request = 0;
+            for (k = 0; k < cur.nkeys; k++) {  /* soltar lo pulsado */
+                if (key_down[k])
+                    javanotify_key_event(game_key(cur.keys[k].code,
+                                                  cur_cfg.rotate,
+                                                  cur_cfg.mirror),
+                                         JAVACALL_KEYRELEASED);
+                key_down[k] = 0;
+            }
+            pad_force = cur.nkeys ? 0 : 1;
+            cfg_apply(&cur_cfg, 1);
+            continue;
+        }
         memset(&t, 0, sizeof(t));
         if (sceTouchPeek(SCE_TOUCH_PORT_FRONT, &t, 1) < 0) continue;
 
@@ -386,7 +461,8 @@ static int touch_thread(SceSize args, void *argp) {
                 if (inside(t.report[i].x / 2.0f, t.report[i].y / 2.0f, r)) on = 1;
             if (on != key_down[k]) {
                 key_down[k] = (unsigned char)on;
-                javanotify_key_event(cur.keys[k].code,
+                javanotify_key_event(game_key(cur.keys[k].code,
+                                              cur_cfg.rotate, cur_cfg.mirror),
                                      on ? JAVACALL_KEYPRESSED
                                         : JAVACALL_KEYRELEASED);
             }
@@ -408,8 +484,20 @@ static int touch_thread(SceSize args, void *argp) {
                 }
             }
             if (found >= 0) {
-                int x = (int)((t.report[found].x / 2.0f - d[0]) * gw / d[2]);
-                int y = (int)((t.report[found].y / 2.0f - d[1]) * gh / d[3]);
+                /* punto en la imagen mostrada (u,v) -> píxel del juego,
+                 * deshaciendo espejo y rotación (inversa de lcd.c) */
+                int rot = cur_cfg.rotate;
+                int dw = (rot & 1) ? gh : gw, dh = (rot & 1) ? gw : gh, x, y;
+                int u = (int)((t.report[found].x / 2.0f - d[0]) * dw / d[2]);
+                int v = (int)((t.report[found].y / 2.0f - d[1]) * dh / d[3]);
+                if (cur_cfg.mirror & 1) u = dw - 1 - u;
+                if (cur_cfg.mirror & 2) v = dh - 1 - v;
+                switch (rot) {
+                case 1: x = v; y = gh - 1 - u; break;
+                case 2: x = gw - 1 - u; y = gh - 1 - v; break;
+                case 3: x = gw - 1 - v; y = u; break;
+                default: x = u; y = v; break;
+                }
                 if (x < 0) x = 0;
                 if (x >= gw) x = gw - 1;
                 if (y < 0) y = 0;
@@ -432,8 +520,10 @@ static int touch_thread(SceSize args, void *argp) {
 }
 
 void cfg_apply(const vj_cfg *c, int live) {
+    static const int sleep_pct[3] = {100, 50, 0};
     int gw, gh, i, n = 0;
     vj_cfg now;
+    if (c != &cur_cfg) cur_cfg = *c;
     if (live) {
         /* el layout se calcula con la pantalla que la VM ya tiene */
         now = *c;
@@ -445,7 +535,11 @@ void cfg_apply(const vj_cfg *c, int live) {
     cfg_screen(c, &gw, &gh);
     if (!live) vita_lcd_set_virtual_size(gw, gh);
 
-    cfg_layout(c, &cur);
+    layout_ex(c, &cur, pad_force);
+    vita_lcd_rotate = c->rotate;
+    vita_lcd_mirror = c->mirror;
+    vita_sleep_pct = sleep_pct[c->speed];
+    vita_lcd_fps_cap = c->speed ? 30 : 0;
     vita_lcd_area[0] = (int)cur.area[0];
     vita_lcd_area[1] = (int)cur.area[1];
     vita_lcd_area[2] = (int)cur.area[2];
@@ -457,7 +551,8 @@ void cfg_apply(const vj_cfg *c, int live) {
     for (i = 0; i < VJ_BTN_N; i++) {
         if (!c->map[i]) continue;
         vita_keymap_custom[n].nativeKey = btn_mask[i];
-        vita_keymap_custom[n].javaKey = (javacall_key)c->map[i];
+        vita_keymap_custom[n].javaKey =
+            (javacall_key)game_key(c->map[i], c->rotate, c->mirror);
         vita_keymap_custom[n].shift = 0;
         n++;
     }
@@ -473,7 +568,8 @@ void cfg_apply(const vj_cfg *c, int live) {
 
     if (cur.nkeys && !pad_font) pad_font = vita2d_load_default_pgf();
     vita_lcd_overlay_hook = cur.nkeys ? pad_overlay : 0;
-    if (touch_tid < 0 && (cur.nkeys || c->touch)) {
+    /* siempre: también atiende L+R+△ (mostrar/ocultar teclado) */
+    if (touch_tid < 0) {
         touch_tid = sceKernelCreateThread("vj_touch", touch_thread, 0x10000100,
                                           0x4000, 0, 0, NULL);
         if (touch_tid >= 0) sceKernelStartThread(touch_tid, 0, NULL);

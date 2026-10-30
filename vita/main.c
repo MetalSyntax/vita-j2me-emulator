@@ -761,6 +761,7 @@ static vj_game cur_game;  /* el que corre: lo usa el menú del juego */
 
 void vita_jvmlog_flush(void);
 extern void (*vita_lcd_menu_hook)(void);
+extern void (*vita_exit_hook)(void);
 
 static void relaunch(const char *a1, const char *a2) {
     char *args[3] = { (char *)a1, (char *)a2, NULL };
@@ -775,6 +776,13 @@ static void relaunch_play(int suite_id) {
     static char id[16];
     snprintf(id, sizeof(id), "%d", suite_id);
     relaunch("-play", id);
+}
+
+/* L+R+X en juego (hilo de teclas): de vuelta a la biblioteca. Las
+ * partidas de los juegos ya están en RMS (se escriben al guardar). */
+static void exit_hook(void) {
+    log_line("L+R+X: salir del juego a la biblioteca");
+    relaunch(NULL, NULL);
 }
 
 /* L+R+START en juego (hilo de la VM, dentro del flush de lcd.c). */
@@ -845,6 +853,7 @@ static void play_direct(int suite_id) {
     cfg_set_last_suite(g.suite_id);
     cur_game = g;
     vita_lcd_menu_hook = game_menu_hook;
+    vita_exit_hook = exit_hook;
     log_line("MODO JUEGO DIRECTO (-play, sin precarga)...");
     vita_start_game(&g, &c, 0);
     launcher_loading_start(&g);
@@ -881,6 +890,7 @@ static int library_thread(SceSize args, void *argp) {
     cfg_apply(&c, 1);
     cur_game = g;
     vita_lcd_menu_hook = game_menu_hook;
+    vita_exit_hook = exit_hook;
     launcher_loading_start(&g);
     game_started = 1;
     suspend_key_input = 0;

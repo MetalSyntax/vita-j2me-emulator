@@ -23,6 +23,7 @@
 #include "javacall_devemu.h"
 #include <vita2d.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/processmgr.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -169,18 +170,41 @@ static void vita_upload_rows(int ystart, int yend) {
  * y sin depender de la semántica del hotspot de vita2d). */
 static unsigned short int __attribute__((aligned(16))) _rotbuf[VSCR_MAX*VSCR_MAX];
 
-/* Rota scbuff (vscr_w x vscr_h, pitch vscr_w) 90° horario
- * a _rotbuf (vscr_h x vscr_w). */
-static void vita_rotate_cw90(void) {
-    int dx, dy;
-    for (dy = 0; dy < vscr_w; dy++) {
-        for (dx = 0; dx < vscr_h; dx++) {
-            _rotbuf[(unsigned int)dy * VSCR_MAX + (unsigned int)dx] =
-                ((unsigned short*)scbuff)[(unsigned int)(vscr_h - 1 - dx) *
-                                          (unsigned int)vscr_w + (unsigned int)dy];
+/* Orientación por juego (vita/gamecfg.c). rotate: 0..3 = 0/90/180/270
+ * grados en sentido horario; mirror: bit0 espejo horizontal, bit1
+ * vertical (sobre la imagen ya girada). gamecfg.c invierte la misma
+ * transformación para el táctil y la cruceta. */
+int vita_lcd_rotate = 0;
+int vita_lcd_mirror = 0;
+
+/* scbuff (W x H) -> _rotbuf (dw x dh, pitch VSCR_MAX) con la orientación
+ * pedida. Recorre el destino y calcula el origen de cada píxel. */
+static void vita_transform(int rot, int mirror, int *out_w, int *out_h) {
+    const unsigned short *src = (const unsigned short *)scbuff;
+    int W = vscr_w, H = vscr_h;
+    int dw = (rot & 1) ? H : W, dh = (rot & 1) ? W : H;
+    int u, v;
+    for (v = 0; v < dh; v++) {
+        unsigned short *row = _rotbuf + (unsigned int)v * VSCR_MAX;
+        int vv = (mirror & 2) ? dh - 1 - v : v;
+        for (u = 0; u < dw; u++) {
+            int uu = (mirror & 1) ? dw - 1 - u : u, x, y;
+            switch (rot) {
+            case 1: x = vv; y = H - 1 - uu; break;
+            case 2: x = W - 1 - uu; y = H - 1 - vv; break;
+            case 3: x = W - 1 - vv; y = uu; break;
+            default: x = uu; y = vv; break;
+            }
+            row[u] = src[y * W + x];
         }
     }
+    *out_w = dw;
+    *out_h = dh;
 }
+
+/* Límite de FPS (0 = sin límite). Con el acelerador de esperas de
+ * vm_patches.c los juegos irían todo lo rápido que dé la CPU: 30 tope. */
+int vita_lcd_fps_cap = 0;
 
 /* Calcula el rectángulo destino en 960x544 con la misma política PSP:
  * centrado (1:1, o 2x entero si cabe) si cabe y !fit_scr,
@@ -430,11 +454,11 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
          * usaba para el chequeo de alineación) y volcaba scbuff. */
         vita_upload_rows(ystart, yend);
         draw_w = vscr_w; draw_h = yend;
-    } else if (rot == 90) {
-        /* Rotación por CPU (modo raro): se sube todo el frame. */
-        vita_rotate_cw90();
-        vita_upload_rows_ex((javacall_pixel*)_rotbuf, VSCR_MAX, vscr_h, 0, vscr_w);
-        draw_w = vscr_h; draw_h = vscr_w;
+    } else if (rot == 90 || vita_lcd_rotate || vita_lcd_mirror) {
+        /* Orientación por CPU: se transforma y sube el frame entero. */
+        int r = vita_lcd_rotate ? vita_lcd_rotate : 1;
+        vita_transform(r, vita_lcd_mirror, &draw_w, &draw_h);
+        vita_upload_rows_ex((javacall_pixel*)_rotbuf, VSCR_MAX, draw_w, 0, draw_h);
     } else {
         vita_upload_rows(ystart, yend);
         draw_w = vscr_w; draw_h = vscr_h;
@@ -460,6 +484,15 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
         dw / (float)draw_w, dh / (float)draw_h);
     if (vita_lcd_overlay_hook) vita_lcd_overlay_hook();
     vita2d_end_drawing();
+    if (vita_lcd_fps_cap > 0) {
+        static SceUInt64 last = 0;
+        SceUInt64 now = sceKernelGetProcessTimeWide();
+        SceUInt64 frame = 1000000ull / (unsigned)vita_lcd_fps_cap;
+        if (last && now - last < frame) {
+            sceKernelDelayThread((SceUInt)(frame - (now - last)));
+        }
+        last = sceKernelGetProcessTimeWide();
+    }
     vita2d_swap_buffers();
     vita_flush_count++;
     return JAVACALL_OK;

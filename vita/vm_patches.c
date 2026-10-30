@@ -109,3 +109,26 @@ int vitaj2me_clinit_skip_count(void) {
 unsigned short __wrap_pcsl_file_getpathseparator(void) {
     return (unsigned short)';';
 }
+
+/* Acelerador (ajuste "Velocidad" por juego, sesión 48). Muchos juegos
+ * J2ME regulan sus FPS con Thread.sleep(); aquí se acortan esas esperas
+ * a vita_sleep_pct %. Mínimo 1 ms: con hilos verdes de CLDC dormir es lo
+ * que deja correr al hilo de eventos/pintado. El tope de FPS lo pone
+ * lcd.c (vita_lcd_fps_cap). nativeFunctionTable.o (libmidp) referencia
+ * el nativo por símbolo desde otro objeto: --wrap basta. Con 100 % o
+ * casos raros (negativo, 0) se usa el original con sus comprobaciones. */
+int vita_sleep_pct = 100;
+
+extern void __real_Java_java_lang_Thread_sleep(void *traps);
+extern long long KNI_GetParameterAsLong(int index);
+extern void _ZN12JVMScheduler20sleep_current_threadEx(long long millis);
+
+void __wrap_Java_java_lang_Thread_sleep(void *traps) {
+    long long ms = KNI_GetParameterAsLong(1);
+    if (vita_sleep_pct >= 100 || ms <= 0) {
+        __real_Java_java_lang_Thread_sleep(traps);
+        return;
+    }
+    ms = ms * vita_sleep_pct / 100;
+    _ZN12JVMScheduler20sleep_current_threadEx(ms < 1 ? 1 : ms);
+}

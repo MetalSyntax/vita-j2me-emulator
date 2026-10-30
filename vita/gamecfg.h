@@ -19,6 +19,9 @@ typedef struct {
     int keypad;         /* VJ_PAD_* */
     int touch;          /* 1 = la pantalla táctil es el puntero del juego */
     int map[VJ_BTN_N];  /* tecla Java por botón (JAVACALL_KEY_*, 0 = nada) */
+    int rotate;         /* 0..3 = 0/90/180/270 grados (horario) */
+    int mirror;         /* bit0 espejo horizontal, bit1 vertical */
+    int speed;          /* 0 normal, 1 rápida, 2 turbo (ver vm_patches.c) */
     int auto_w, auto_h; /* detectada en el JAR (0 = sin detectar aún) */
 } vj_cfg;
 

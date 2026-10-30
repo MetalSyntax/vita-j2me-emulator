@@ -849,13 +849,22 @@ static void draw_scene(const scene *sc) {
  * ====================================================================== */
 
 enum {
-    ROW_RES, ROW_SCALE, ROW_FILTER, ROW_PAD, ROW_TOUCH,
-    ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N, ROW_N
+    ROW_RES, ROW_SCALE, ROW_FILTER, ROW_ROTATE, ROW_MIRROR, ROW_PAD,
+    ROW_TOUCH, ROW_SPEED, ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N, ROW_N
 };
 
 static const char *const scale_names[] = {
     "", "Ajustar (mantiene proporción)", "Escalado entero (nítido)",
     "Estirar a la zona", "Tamaño original",
+};
+static const char *const rotate_names[] = {
+    "0°", "90°", "180°", "270°",
+};
+static const char *const mirror_names[] = {
+    "Ninguno", "Horizontal", "Vertical", "Horizontal y vertical",
+};
+static const char *const speed_names[] = {
+    "Normal", "Rápida (máx. 30 FPS)", "Turbo (máx. 30 FPS)",
 };
 static const char *const pad_names[] = {
     "Automático", "Desactivado", "A la izquierda", "A la derecha",
@@ -871,9 +880,19 @@ static const char *row_help(int r) {
         return "Cómo se agranda el juego en la pantalla de la Vita.";
     case ROW_FILTER:
         return "Nítido conserva los píxeles; suave los difumina al escalar.";
+    case ROW_ROTATE:
+        return "Gira la imagen del juego (sentido horario). El táctil y la "
+               "cruceta se giran con ella.";
+    case ROW_MIRROR:
+        return "Refleja la imagen del juego, después de girarla.";
+    case ROW_SPEED:
+        return "Acorta las esperas del juego (Thread.sleep) para que vaya "
+               "más fluido, con un tope de 30 FPS. Si un juego va acelerado "
+               "de más, vuelve a Normal.";
     case ROW_PAD:
         return "Teclado de móvil táctil en los laterales, con el juego en el "
-               "centro. Automático: solo en juegos verticales.";
+               "centro. Automático: solo en juegos verticales. En juego, "
+               "L+R+Triángulo lo muestra u oculta.";
     case ROW_TOUCH:
         return "Tocar el juego envía el puntero al MIDlet (juegos táctiles). "
                "Requiere reiniciar el juego.";
@@ -915,6 +934,18 @@ static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
         snprintf(label, cap, "Pantalla táctil");
         snprintf(val, cap, "%s", c->touch ? "Activada" : "Desactivada");
         break;
+    case ROW_ROTATE:
+        snprintf(label, cap, "Rotación");
+        snprintf(val, cap, "%s", rotate_names[c->rotate]);
+        break;
+    case ROW_MIRROR:
+        snprintf(label, cap, "Espejo");
+        snprintf(val, cap, "%s", mirror_names[c->mirror]);
+        break;
+    case ROW_SPEED:
+        snprintf(label, cap, "Velocidad");
+        snprintf(val, cap, "%s", speed_names[c->speed]);
+        break;
     default:
         snprintf(label, cap, "Restaurar valores por defecto");
         break;
@@ -943,6 +974,9 @@ static void row_change(vj_cfg *c, int r, int d) {
     case ROW_FILTER: c->filter = !c->filter; break;
     case ROW_PAD: c->keypad = wrap(c->keypad, d, 5); break;
     case ROW_TOUCH: c->touch = !c->touch; break;
+    case ROW_ROTATE: c->rotate = wrap(c->rotate, d, 4); break;
+    case ROW_MIRROR: c->mirror = wrap(c->mirror, d, 4); break;
+    case ROW_SPEED: c->speed = wrap(c->speed, d, 3); break;
     }
 }
 
@@ -1038,6 +1072,10 @@ static void draw_settings(const scene *sc, const vj_game *g, const vj_cfg *c,
     text(612, 104, 0.8f, C_TEXT_2, "Vista previa");
     draw_preview(c, 612, 120, 300);
     text_wrap(612, 330, 0.78f, C_TEXT_2, row_help(row), 300);
+    if (ingame)
+        text_wrap(612, 450, 0.72f, C_TEXT_3,
+                  "En juego: L+R+START este menú · L+R+X salir · "
+                  "L+R+Triángulo teclado virtual", 300);
 
     vita2d_draw_rectangle(0, 498, SCR_W, 46, C_BAR);
     vita2d_draw_rectangle(0, 498, SCR_W, 1, C_PANEL_LINE);
@@ -1369,6 +1407,12 @@ static void draw_loading(float fade) {
     snprintf(buf, sizeof(buf), "%d s", (int)t);
     text(cx - text_w(0.7f, buf) / 2.0f, ty + tile + 202, 0.7f, C_TEXT_3,
          buf);
+    if (!ld.install) {
+        const char *keys = "En juego:  L+R+START menú   ·   L+R+X salir   ·   "
+                           "L+R+Triángulo teclado virtual";
+        text(cx - text_w(0.7f, keys) / 2.0f, SCR_H - 22, 0.7f, C_TEXT_3,
+             keys);
+    }
 
     if (fade < 1.0f)
         vita2d_draw_rectangle(0, 0, SCR_W, SCR_H,
