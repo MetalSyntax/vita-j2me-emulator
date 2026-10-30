@@ -88,7 +88,20 @@ void javacall_printf (const char* format, ...) {
   javacall_print(logs);
 }
 
+/* HW 039: AppManagerUI.sizeChanged() llama JVM.setLogChannel(NONE) en
+ * cuanto el AMS se pinta (PSPKVM silenciaba la consola en release) y
+ * JVM_SetLogChannel -> aquí. Eso cegaba el jvm.log justo antes del
+ * Launch (ni setDeviceToRun ni VITAJ2ME-KEY ni el volcado pss en
+ * 036-039). Una vez que el frontend activa el FICHERO, se mantiene. */
+static int log_file_latched = 0;
+
 void javacall_logging_channel(int channel) {
+  if (log_file_latched && !(channel & JAVACALL_LOG_CHANNEL_FILE)) {
+    log_to_file("VITAJ2ME-LOG: setLogChannel sin FILE ignorado "
+                "(el jvm.log sigue activo)\n");
+    channel |= JAVACALL_LOG_CHANNEL_FILE;
+  }
+  if (channel & JAVACALL_LOG_CHANNEL_FILE) log_file_latched = 1;
   if (channel & JAVACALL_LOG_CHANNEL_CONSOLE) log_channel_consle = 1;
   else log_channel_consle = 0;
   if (channel & JAVACALL_LOG_CHANNEL_STARTUP) log_channel_startup = 1;

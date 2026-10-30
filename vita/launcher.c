@@ -278,7 +278,10 @@ static int load_suites(vj_game *g, int max) {
         e->jar_size = rd32(b + pos + 24);
         hash_len = rd32(b + pos + 28);
         pos += 39;
-        if (hash_len < 0 || hash_len > 256 || pos + hash_len > len) break;
+        /* HW 039: jarHashLen = -1 (0xFFFFFFFF) en suites sin hash;
+         * read_suites_data solo lo usa si es > 0. */
+        if (hash_len < 0) hash_len = 0;
+        if (hash_len > 256 || pos + hash_len > len) goto bad;
         pos += hash_len;
         for (k = 0; k < 7; k++) {
             int sl;
@@ -299,7 +302,12 @@ static int load_suites(vj_game *g, int max) {
         snprintf(e->icon, sizeof(e->icon), "%s",
                  tmp[2][0] == '/' ? tmp[2] + 1 : tmp[2]);
         snprintf(e->vendor, sizeof(e->vendor), "%s", tmp[3]);
-        if (tmp[5][0] && !strchr(tmp[5], ':'))
+        /* El instalador (hack de referencia) no copia el JAR a appdb/: la
+         * suite guarda la URL de origen, p.ej. "file:///games/SoD.jar".
+         * Las raíces JSR-75 del port cuelgan de VJ_HOME (fileconnection.c). */
+        if (strncmp(tmp[5], "file:///", 8) == 0)
+            snprintf(e->jar, sizeof(e->jar), VJ_HOME "/%s", tmp[5] + 8);
+        else if (tmp[5][0] && !strchr(tmp[5], ':'))
             snprintf(e->jar, sizeof(e->jar), VJ_HOME "/%s", tmp[5]);
         else
             snprintf(e->jar, sizeof(e->jar), "%s", tmp[5]);
