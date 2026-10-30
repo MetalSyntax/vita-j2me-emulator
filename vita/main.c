@@ -517,6 +517,51 @@ static void write_mark(const char *mark, long long sz, int attempts) {
     }
 }
 
+/* Nombres con ' & ( ) espacios... (p.ej. "Cowboys_&amp;amp;_Aliens_..."
+ * de los packs) rompen la URL file:///games/<nombre> del instalador de
+ * MIDP. Se renombran a [A-Za-z0-9._-] antes de instalar; el nombre que se
+ * ve en la biblioteca sale del manifiesto, no del fichero. */
+static void sanitize_games_dir(void) {
+    static const char *GDIR = VITA_HOME "/games";
+    SceUID dfd = sceIoDopen(GDIR);
+    SceIoDirent ent;
+    if (dfd < 0) return;
+    memset(&ent, 0, sizeof(ent));
+    while (sceIoDread(dfd, &ent) > 0) {
+        char clean[256], from[320], to[320];
+        const char *src = ent.d_name;
+        int i, o = 0, dirty = 0;
+        if (has_suffix_ci(src, ".jar") || has_suffix_ci(src, ".jad")) {
+            for (i = 0; src[i] && o < (int)sizeof(clean) - 1; i++) {
+                char ch = src[i];
+                if (!strncmp(src + i, "&amp;", 5)) {  /* entidad HTML */
+                    i += 4;
+                    ch = '_';
+                    dirty = 1;
+                } else if (!((ch >= 'a' && ch <= 'z') ||
+                             (ch >= 'A' && ch <= 'Z') ||
+                             (ch >= '0' && ch <= '9') || ch == '.' ||
+                             ch == '_' || ch == '-')) {
+                    ch = '_';
+                    dirty = 1;
+                }
+                if (ch == '_' && o > 0 && clean[o - 1] == '_') continue;
+                clean[o++] = ch;
+            }
+            clean[o] = 0;
+            if (dirty) {
+                snprintf(from, sizeof(from), "%s/%s", GDIR, src);
+                snprintf(to, sizeof(to), "%s/%s", GDIR, clean);
+                log_line("games/: '%s' -> '%s' (%s)", src, clean,
+                         sceIoRename(from, to) >= 0 ? "renombrado"
+                                                    : "NO se pudo renombrar");
+            }
+        }
+        memset(&ent, 0, sizeof(ent));
+    }
+    sceIoDclose(dfd);
+}
+
 /* Busca UN .jad/.jar pendiente de instalar en games/.
  * Devuelve 1 y rellena out_name (solo fichero) si hay; 0 si toca AMS.
  * Reglas: .jad manda sobre su .jar hermano; instalado = tamaño igual en
@@ -947,6 +992,7 @@ int main(int argc, char *argv[]) {
     boot_session_log();
 
     log_line("=== VitaJ2ME Fase 2b (sesion %d) ===", vitaj2me_session_id);
+    cfg_global_load();  /* idioma y valores por defecto (config/global.cfg) */
 
     /* Canales de log de la JVM: sin esto javacall_printf no va a ningún
      * lado (bug ciego: sin jvm.log no hay triage posible). STDOUT para
@@ -1061,6 +1107,7 @@ int main(int argc, char *argv[]) {
     /* Un arranque = UN evento START (bug #20): o instalador o AMS. */
     {
         char pending[256];
+        sanitize_games_dir();
         if (pending_install_pick(pending, sizeof(pending))) {
             boot_installer_mode(pending);
             return 0; /* inalcanzable (exit dentro), por claridad */

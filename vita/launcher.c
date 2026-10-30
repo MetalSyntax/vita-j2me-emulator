@@ -491,7 +491,7 @@ static int manifest_size(const char *m, const char *key, int *w, int *h) {
     p += strlen(key);
     while (*p == ':' || *p == ' ') p++;
     return sscanf(p, "%d%*[,xX ]%d", w, h) == 2 && *w > 0 && *h > 0 &&
-           *w <= 640 && *h <= 640;
+           *w <= 864 && *h <= 864;
 }
 
 int jar_detect_screen(const char *jar, int *w, int *h) {
@@ -513,6 +513,17 @@ int jar_detect_screen(const char *jar, int *w, int *h) {
             }
         }
         free(m);
+    }
+    /* El nombre del fichero: muchos packs lo traen, p.ej.
+     * "Alien_Quarantine_480x800(v1.2.6).jar". */
+    {
+        const char *b = strrchr(jar, '/'), *q;
+        for (q = b ? b + 1 : jar; *q; q++) {
+            if (*q >= '1' && *q <= '9' && sscanf(q, "%dx%d", w, h) == 2 &&
+                known_res(*w, *h)) {
+                return 1;
+            }
+        }
     }
     /* Sin atributos: el PNG más grande con tamaño de pantalla conocido
      * (splash y fondos a pantalla completa, típico de Gameloft y cía). */
@@ -656,7 +667,8 @@ static void draw_header(const scene *sc) {
     float x;
     text(48, 54, 1.45f, C_WHITE, "VitaJ2ME");
     text(48 + text_w(1.45f, "VitaJ2ME") + 14, 54, 0.9f, C_TEXT_2,
-         "Biblioteca Java ME");
+         L("Java ME for PS Vita", "Java ME para PS Vita",
+           "Java ME para PS Vita"));
     /* reloj + batería, como la barra de estado del sistema */
     memset(&now, 0, sizeof(now));
     sceRtcGetCurrentClockLocalTime(&now);
@@ -673,9 +685,14 @@ static void draw_header(const scene *sc) {
         vita2d_draw_rectangle(bx + 3, by + 3, 30.0f * bat / 100, 12, bc);
     }
     /* encabezado de sección */
-    text(48, 112, 0.95f, C_WHITE, "Tus juegos");
-    snprintf(buf, sizeof(buf), sc->n == 1 ? "%d juego" : "%d juegos", sc->n);
-    text(48 + text_w(0.95f, "Tus juegos") + 12, 112, 0.8f, C_TEXT_3, buf);
+    {
+        const char *t = L("Your games", "Tus juegos", "Seus jogos");
+        text(48, 112, 0.95f, C_WHITE, t);
+        snprintf(buf, sizeof(buf), "%d %s", sc->n,
+                 sc->n == 1 ? L("game", "juego", "jogo")
+                            : L("games", "juegos", "jogos"));
+        text(48 + text_w(0.95f, t) + 12, 112, 0.8f, C_TEXT_3, buf);
+    }
 }
 
 static void draw_initials(const char *name, float cx, float cy, float sc) {
@@ -756,7 +773,8 @@ static void draw_selected_info(const scene *sc) {
         text_fit(48, y, 1.15f, C_WHITE, g->name, SCR_W - 96);
         snprintf(buf, sizeof(buf), "%s   ·   %d KB   ·   %s",
                  g->vendor[0] ? g->vendor : "Java ME", g->jar_size / 1024,
-                 g->midlets > 1 ? "varios MIDlets" : "MIDP");
+                 g->midlets > 1 ? L("several MIDlets", "varios MIDlets",
+                                    "vários MIDlets") : "MIDP");
         text_fit(48, y + 28, 0.8f, C_TEXT_2, buf, SCR_W - 96);
     }
 }
@@ -767,17 +785,18 @@ static void draw_bottom_bar(const scene *sc) {
     vita2d_draw_rectangle(0, 498, SCR_W, 1, RGBA8(0x2B, 0x46, 0x8C, 0xFF));
     x = 48;
     if (sc->info) {
-        x += hint(x, cy, 'x', NULL, "Jugar") + 28;
-        x += hint(x, cy, 's', NULL, "Ajustes") + 28;
-        hint(x, cy, 'o', NULL, "Volver");
+        x += hint(x, cy, 'x', NULL, L("Play", "Jugar", "Jogar")) + 28;
+        x += hint(x, cy, 's', NULL, L("Settings", "Ajustes", "Ajustes")) + 28;
+        hint(x, cy, 'o', NULL, L("Back", "Volver", "Voltar"));
         return;
     }
     if (sc->sel < sc->n) {
-        x += hint(x, cy, 'x', NULL, "Jugar") + 28;
-        x += hint(x, cy, 's', NULL, "Ajustes") + 28;
-        x += hint(x, cy, 't', NULL, "Detalles") + 28;
+        x += hint(x, cy, 'x', NULL, L("Play", "Jugar", "Jogar")) + 28;
+        x += hint(x, cy, 's', NULL, L("Settings", "Ajustes", "Ajustes")) + 28;
+        x += hint(x, cy, 't', NULL, L("Details", "Detalles", "Detalhes")) + 28;
     }
-    hint(x, cy, 'o', NULL, "Salir");
+    x += hint(x, cy, 0, "SELECT", L("Options", "Opciones", "Opções")) + 28;
+    hint(x, cy, 'o', NULL, L("Exit", "Salir", "Sair"));
 }
 
 static void draw_info_overlay(const scene *sc) {
@@ -807,23 +826,36 @@ static void draw_info_overlay(const scene *sc) {
     text_fit(px + 196, py + 94, 0.9f, C_TEXT_2,
              g->vendor[0] ? g->vendor : "Java ME", (int)pw - 220);
     y = py + 206;
-    snprintf(buf, sizeof(buf), "Tamaño del JAR:   %d KB", g->jar_size / 1024);
+    snprintf(buf, sizeof(buf), "%s:   %d KB",
+             L("JAR size", "Tamaño del JAR", "Tamanho do JAR"),
+             g->jar_size / 1024);
     text(px + 28, y, 0.8f, C_TEXT_2, buf);
-    snprintf(buf, sizeof(buf), "Clase MIDlet:   %s", g->cls);
+    snprintf(buf, sizeof(buf), "%s:   %s",
+             L("MIDlet class", "Clase MIDlet", "Classe MIDlet"), g->cls);
     text_fit(px + 28, y + 30, 0.8f, C_TEXT_2, buf, (int)pw - 56);
     snprintf(buf, sizeof(buf), "Suite:   #%d   ·   %d MIDlet(s)", g->suite_id,
              g->midlets);
     text(px + 28, y + 60, 0.8f, C_TEXT_2, buf);
-    snprintf(buf, sizeof(buf), "Archivo:   %s", g->jar);
+    snprintf(buf, sizeof(buf), "%s:   %s", L("File", "Archivo", "Arquivo"),
+             g->jar);
     text_fit(px + 28, y + 90, 0.8f, C_TEXT_3, buf, (int)pw - 56);
 }
 
 static void draw_empty_hint(const scene *sc) {
     if (sc->n) return;
-    text(48, CARD_Y + 96, 1.0f, C_WHITE, "Todavía no hay juegos instalados");
+    text(48, CARD_Y + 96, 1.0f, C_WHITE,
+         L("No games installed yet", "Todavía no hay juegos instalados",
+           "Ainda não há jogos instalados"));
     text(48, CARD_Y + 128, 0.8f, C_TEXT_2,
-         "Copia tus .jar a ux0:data/vitaj2me/games/ y reinicia VitaJ2ME:");
-    text(48, CARD_Y + 152, 0.8f, C_TEXT_2, "se instalan solos al arrancar.");
+         L("Copy your .jar files to ux0:data/vitaj2me/games/ and restart "
+           "VitaJ2ME:",
+           "Copia tus .jar a ux0:data/vitaj2me/games/ y reinicia VitaJ2ME:",
+           "Copie seus .jar para ux0:data/vitaj2me/games/ e reinicie o "
+           "VitaJ2ME:"));
+    text(48, CARD_Y + 152, 0.8f, C_TEXT_2,
+         L("they install themselves on startup.",
+           "se instalan solos al arrancar.",
+           "eles se instalam sozinhos ao iniciar."));
 }
 
 static void draw_scene(const scene *sc) {
@@ -845,109 +877,223 @@ static void draw_scene(const scene *sc) {
 }
 
 /* ======================================================================
- * Ajustes por juego (□): pantalla, teclado virtual, táctil y botones
+ * Ajustes: por juego (□ en la biblioteca, L+R+START en juego) y globales
+ * (SELECT en la biblioteca: idioma, FPS y valores por defecto de todos
+ * los juegos). Misma pantalla; cambia la lista de filas.
  * ====================================================================== */
 
 enum {
+    ROW_LANG, ROW_FPS,
     ROW_RES, ROW_SCALE, ROW_FILTER, ROW_ROTATE, ROW_MIRROR, ROW_PAD,
     ROW_TOUCH, ROW_SPEED, ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N, ROW_N
 };
+enum { SET_GAME, SET_INGAME, SET_GLOBAL };
 
-static const char *const scale_names[] = {
-    "", "Ajustar (mantiene proporción)", "Escalado entero (nítido)",
-    "Estirar a la zona", "Tamaño original",
-};
-static const char *const rotate_names[] = {
-    "0°", "90°", "180°", "270°",
-};
-static const char *const mirror_names[] = {
-    "Ninguno", "Horizontal", "Vertical", "Horizontal y vertical",
-};
-static const char *const speed_names[] = {
-    "Normal", "Rápida (máx. 30 FPS)", "Turbo (máx. 30 FPS)",
-};
-static const char *const pad_names[] = {
-    "Automático", "Desactivado", "A la izquierda", "A la derecha",
-    "A ambos lados",
-};
+/* Filas visibles según el modo; devuelve cuántas. */
+static int settings_rows(int mode, int *rows) {
+    int r, n = 0;
+    for (r = 0; r < ROW_N; r++) {
+        if (mode == SET_GLOBAL) {
+            /* resolución y orientación dependen de cada juego */
+            if (r == ROW_RES || r == ROW_ROTATE || r == ROW_MIRROR) continue;
+        } else if (r == ROW_LANG || r == ROW_FPS) {
+            continue;
+        }
+        rows[n++] = r;
+    }
+    return n;
+}
 
-static const char *row_help(int r) {
+static const char *lang_names[] = {"English", "Español", "Português"};
+
+static const char *scale_name(int s) {
+    switch (s) {
+    case VJ_SCALE_INT: return L("Integer (sharp)", "Escalado entero (nítido)",
+                                "Inteira (nítida)");
+    case VJ_SCALE_STRETCH: return L("Stretch to area", "Estirar a la zona",
+                                    "Esticar na área");
+    case VJ_SCALE_1X: return L("Original size", "Tamaño original",
+                               "Tamanho original");
+    default: return L("Fit (keep aspect)", "Ajustar (mantiene proporción)",
+                      "Ajustar (mantém proporção)");
+    }
+}
+
+static const char *mirror_name(int m) {
+    switch (m) {
+    case 1: return L("Horizontal", "Horizontal", "Horizontal");
+    case 2: return L("Vertical", "Vertical", "Vertical");
+    case 3: return L("Both", "Horizontal y vertical", "Horizontal e vertical");
+    default: return L("None", "Ninguno", "Nenhum");
+    }
+}
+
+static const char *speed_name(int sp) {
+    switch (sp) {
+    case 1: return L("Fast (max. 30 FPS)", "Rápida (máx. 30 FPS)",
+                     "Rápida (máx. 30 FPS)");
+    case 2: return L("Turbo (max. 30 FPS)", "Turbo (máx. 30 FPS)",
+                     "Turbo (máx. 30 FPS)");
+    default: return L("Normal", "Normal", "Normal");
+    }
+}
+
+static const char *pad_name(int k) {
+    switch (k) {
+    case VJ_PAD_OFF: return L("Off", "Desactivado", "Desativado");
+    case VJ_PAD_LEFT: return L("Left side", "A la izquierda", "À esquerda");
+    case VJ_PAD_RIGHT: return L("Right side", "A la derecha", "À direita");
+    case VJ_PAD_BOTH: return L("Both sides", "A ambos lados",
+                               "Dos dois lados");
+    default: return L("Automatic", "Automático", "Automático");
+    }
+}
+
+static const char *on_off(int v) {
+    return v ? L("On", "Activado", "Ativado") : L("Off", "Desactivado",
+                                                  "Desativado");
+}
+
+static const char *row_help(int r, int mode) {
     switch (r) {
+    case ROW_LANG:
+        return L("Language of the VitaJ2ME interface.",
+                 "Idioma de la interfaz de VitaJ2ME.",
+                 "Idioma da interface do VitaJ2ME.");
+    case ROW_FPS:
+        return L("Shows the real frames per second in a corner while playing.",
+                 "Muestra en una esquina los fotogramas por segundo reales "
+                 "mientras juegas.",
+                 "Mostra num canto os quadros por segundo reais enquanto "
+                 "você joga.");
     case ROW_RES:
-        return "Pantalla del móvil para el que se hizo el juego. Automática "
-               "la deduce del JAR. Requiere reiniciar el juego.";
+        return L("Screen of the phone the game was made for. Automatic reads "
+                 "it from the JAR. Restarts the game.",
+                 "Pantalla del móvil para el que se hizo el juego. Automática "
+                 "la deduce del JAR. Requiere reiniciar el juego.",
+                 "Tela do celular para o qual o jogo foi feito. Automática a "
+                 "deduz do JAR. Requer reiniciar o jogo.");
     case ROW_SCALE:
-        return "Cómo se agranda el juego en la pantalla de la Vita.";
+        return L("How the game is enlarged on the Vita screen.",
+                 "Cómo se agranda el juego en la pantalla de la Vita.",
+                 "Como o jogo é ampliado na tela do Vita.");
     case ROW_FILTER:
-        return "Nítido conserva los píxeles; suave los difumina al escalar.";
+        return L("Sharp keeps the pixels; smooth blurs them when scaling.",
+                 "Nítido conserva los píxeles; suave los difumina al escalar.",
+                 "Nítido mantém os pixels; suave os suaviza ao ampliar.");
     case ROW_ROTATE:
-        return "Gira la imagen del juego (sentido horario). El táctil y la "
-               "cruceta se giran con ella.";
+        return L("Rotates the game image (clockwise). Touch and D-pad "
+                 "rotate with it.",
+                 "Gira la imagen del juego (sentido horario). El táctil y la "
+                 "cruceta se giran con ella.",
+                 "Gira a imagem do jogo (sentido horário). O toque e o "
+                 "direcional giram junto.");
     case ROW_MIRROR:
-        return "Refleja la imagen del juego, después de girarla.";
+        return L("Mirrors the game image, after rotating it.",
+                 "Refleja la imagen del juego, después de girarla.",
+                 "Espelha a imagem do jogo, depois de girá-la.");
     case ROW_SPEED:
-        return "Acorta las esperas del juego (Thread.sleep) para que vaya "
-               "más fluido, con un tope de 30 FPS. Si un juego va acelerado "
-               "de más, vuelve a Normal.";
+        return L("Shortens the game's waits (Thread.sleep) so it runs "
+                 "smoother, capped at 30 FPS. If a game runs too fast, go "
+                 "back to Normal.",
+                 "Acorta las esperas del juego (Thread.sleep) para que vaya "
+                 "más fluido, con un tope de 30 FPS. Si un juego va acelerado "
+                 "de más, vuelve a Normal.",
+                 "Encurta as esperas do jogo (Thread.sleep) para rodar mais "
+                 "fluido, com limite de 30 FPS. Se um jogo ficar rápido "
+                 "demais, volte para Normal.");
     case ROW_PAD:
-        return "Teclado de móvil táctil en los laterales, con el juego en el "
-               "centro. Automático: solo en juegos verticales. En juego, "
-               "L+R+Triángulo lo muestra u oculta.";
+        return L("Touch phone keypad on the sides, game in the center. "
+                 "Automatic: only for portrait games. In game, "
+                 "L+R+Triangle shows or hides it.",
+                 "Teclado de móvil táctil en los laterales, con el juego en el "
+                 "centro. Automático: solo en juegos verticales. En juego, "
+                 "L+R+Triángulo lo muestra u oculta.",
+                 "Teclado de celular nas laterais, com o jogo no centro. "
+                 "Automático: só em jogos verticais. No jogo, "
+                 "L+R+Triângulo mostra ou oculta.");
     case ROW_TOUCH:
-        return "Tocar el juego envía el puntero al MIDlet (juegos táctiles). "
-               "Requiere reiniciar el juego.";
+        return L("Touching the game sends the pointer to the MIDlet (touch "
+                 "games). Restarts the game.",
+                 "Tocar el juego envía el puntero al MIDlet (juegos "
+                 "táctiles). Requiere reiniciar el juego.",
+                 "Tocar o jogo envia o ponteiro ao MIDlet (jogos de toque). "
+                 "Requer reiniciar o jogo.");
     case ROW_RESET:
-        return "Vuelve a los valores por defecto de este juego.";
+        return mode == SET_GLOBAL
+            ? L("Back to the factory defaults (language is kept).",
+                "Vuelve a los valores de fábrica (el idioma se mantiene).",
+                "Volta aos valores de fábrica (o idioma é mantido).")
+            : L("Back to the global defaults for this game.",
+                "Vuelve a los valores globales por defecto en este juego.",
+                "Volta aos valores globais padrão neste jogo.");
     default:
-        return "Tecla del móvil que envía este botón de la Vita.";
+        return L("Phone key sent by this Vita button.",
+                 "Tecla del móvil que envía este botón de la Vita.",
+                 "Tecla do celular enviada por este botão do Vita.");
     }
 }
 
 static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
     int w, h;
     if (r >= ROW_MAP0 && r < ROW_RESET) {
-        snprintf(label, cap, "%s", vj_btn_name[r - ROW_MAP0]);
+        snprintf(label, cap, "%s", cfg_btn_name(r - ROW_MAP0));
         snprintf(val, cap, "%s", cfg_key_name(c->map[r - ROW_MAP0]));
         return;
     }
     val[0] = 0;
     switch (r) {
+    case ROW_LANG:
+        snprintf(label, cap, "%s", L("Language", "Idioma", "Idioma"));
+        snprintf(val, cap, "%s", lang_names[vj_lang]);
+        break;
+    case ROW_FPS:
+        snprintf(label, cap, "%s", L("FPS counter", "Contador de FPS",
+                                     "Contador de FPS"));
+        snprintf(val, cap, "%s", on_off(vj_show_fps));
+        break;
     case ROW_RES:
-        snprintf(label, cap, "Resolución");
+        snprintf(label, cap, "%s", L("Resolution", "Resolución", "Resolução"));
         cfg_screen(c, &w, &h);
         if (c->res) snprintf(val, cap, "%d x %d", w, h);
-        else snprintf(val, cap, "Automática (%d x %d)", w, h);
+        else snprintf(val, cap, "%s (%d x %d)",
+                      L("Automatic", "Automática", "Automática"), w, h);
         break;
     case ROW_SCALE:
-        snprintf(label, cap, "Escala");
-        snprintf(val, cap, "%s", scale_names[c->scale]);
+        snprintf(label, cap, "%s", L("Scaling", "Escala", "Escala"));
+        snprintf(val, cap, "%s", scale_name(c->scale));
         break;
     case ROW_FILTER:
-        snprintf(label, cap, "Filtro");
-        snprintf(val, cap, "%s", c->filter ? "Suave" : "Nítido");
+        snprintf(label, cap, "%s", L("Filter", "Filtro", "Filtro"));
+        snprintf(val, cap, "%s", c->filter ? L("Smooth", "Suave", "Suave")
+                                           : L("Sharp", "Nítido", "Nítido"));
         break;
     case ROW_PAD:
-        snprintf(label, cap, "Teclado virtual");
-        snprintf(val, cap, "%s", pad_names[c->keypad]);
+        snprintf(label, cap, "%s", L("Virtual keypad", "Teclado virtual",
+                                     "Teclado virtual"));
+        snprintf(val, cap, "%s", pad_name(c->keypad));
         break;
     case ROW_TOUCH:
-        snprintf(label, cap, "Pantalla táctil");
-        snprintf(val, cap, "%s", c->touch ? "Activada" : "Desactivada");
+        snprintf(label, cap, "%s", L("Touch screen", "Pantalla táctil",
+                                     "Tela de toque"));
+        snprintf(val, cap, "%s", on_off(c->touch));
         break;
     case ROW_ROTATE:
-        snprintf(label, cap, "Rotación");
-        snprintf(val, cap, "%s", rotate_names[c->rotate]);
+        snprintf(label, cap, "%s", L("Rotation", "Rotación", "Rotação"));
+        snprintf(val, cap, "%d°", c->rotate * 90);
         break;
     case ROW_MIRROR:
-        snprintf(label, cap, "Espejo");
-        snprintf(val, cap, "%s", mirror_names[c->mirror]);
+        snprintf(label, cap, "%s", L("Mirror", "Espejo", "Espelho"));
+        snprintf(val, cap, "%s", mirror_name(c->mirror));
         break;
     case ROW_SPEED:
-        snprintf(label, cap, "Velocidad");
-        snprintf(val, cap, "%s", speed_names[c->speed]);
+        snprintf(label, cap, "%s", L("Speed", "Velocidad", "Velocidade"));
+        snprintf(val, cap, "%s", speed_name(c->speed));
         break;
     default:
-        snprintf(label, cap, "Restaurar valores por defecto");
+        snprintf(label, cap, "%s", L("Restore defaults",
+                                     "Restaurar valores por defecto",
+                                     "Restaurar padrões"));
         break;
     }
 }
@@ -969,6 +1115,8 @@ static void row_change(vj_cfg *c, int r, int d) {
         return;
     }
     switch (r) {
+    case ROW_LANG: vj_lang = wrap(vj_lang, d, 3); break;
+    case ROW_FPS: vj_show_fps = !vj_show_fps; break;
     case ROW_RES: c->res = wrap(c->res, d, vj_res_n + 1); break;
     case ROW_SCALE: c->scale = wrap(c->scale - 1, d, 4) + 1; break;
     case ROW_FILTER: c->filter = !c->filter; break;
@@ -1005,9 +1153,9 @@ static void draw_preview(const vj_cfg *c, float px, float py, float pw) {
          py + (lo.dest[1] + lo.dest[3] / 2) * k + 6, 0.8f, C_WHITE, buf);
 }
 
-/* Texto en varias líneas, partiendo por palabras. */
-static void text_wrap(float x, float y, float scale, unsigned int c,
-                      const char *s, int max_w) {
+/* Texto en varias líneas, partiendo por palabras. Devuelve la y final. */
+static float text_wrap(float x, float y, float scale, unsigned int c,
+                       const char *s, int max_w) {
     char line[200] = "", trial[200];
     while (*s) {
         int n = (int)strcspn(s, " ");
@@ -1024,34 +1172,38 @@ static void text_wrap(float x, float y, float scale, unsigned int c,
         while (*s == ' ') s++;
     }
     if (line[0]) text(x, y, scale, c, line);
+    return y + 24;
 }
 
-static void draw_settings(const scene *sc, const vj_game *g, const vj_cfg *c,
-                          int row, int top, int ingame) {
+static void draw_settings(const scene *sc, const char *subtitle,
+                          const vj_cfg *c, const int *rows, int nrows,
+                          int sel, int top, int mode) {
     const int vis = 10, rh = 34;
     char label[80], val[80];
     float y, x0 = 48, x1 = 560;
     int i;
+    const char *title =
+        mode == SET_INGAME ? L("Game paused", "Juego en pausa", "Jogo pausado")
+        : mode == SET_GLOBAL ? L("Options", "Opciones", "Opções")
+                             : L("Game settings", "Ajustes del juego",
+                                 "Ajustes do jogo");
     vita2d_start_drawing();
     vita2d_clear_screen();
     draw_background(sc->frame);
-    {
-        const char *title = ingame ? "Juego en pausa" : "Ajustes del juego";
-        text(48, 54, 1.3f, C_WHITE, title);
-        text_fit(48 + text_w(1.3f, title) + 14, 54, 0.9f, C_TEXT_2, g->name,
-                 SCR_W - 420);
-    }
+    text(48, 54, 1.3f, C_WHITE, title);
+    text_fit(48 + text_w(1.3f, title) + 14, 54, 0.9f, C_TEXT_2, subtitle,
+             SCR_W - 420);
 
     y = 92;
-    for (i = top; i < top + vis && i < ROW_N; i++, y += rh) {
-        int sel = i == row;
-        row_text(c, i, label, val, sizeof(label));
-        if (sel) fill_rrect(x0 - 12, y, x1 - x0 + 24, rh - 4, 10, C_ACCENT);
-        text_fit(x0, y + 22, 0.82f, sel ? C_WHITE : C_TEXT_2, label, 230);
+    for (i = top; i < top + vis && i < nrows; i++, y += rh) {
+        int on = i == sel;
+        row_text(c, rows[i], label, val, sizeof(label));
+        if (on) fill_rrect(x0 - 12, y, x1 - x0 + 24, rh - 4, 10, C_ACCENT);
+        text_fit(x0, y + 22, 0.82f, on ? C_WHITE : C_TEXT_2, label, 230);
         if (val[0]) {
             float vw = text_w(0.82f, val);
             if (vw > 250) vw = 250;
-            if (sel) {
+            if (on) {
                 glyph_pill(x1 - vw - 46, y + 13, "<");
                 text_fit(x1 - vw - 16, y + 22, 0.82f, C_WHITE, val, 250);
                 glyph_pill(x1 - 6, y + 13, ">");
@@ -1060,49 +1212,71 @@ static void draw_settings(const scene *sc, const vj_game *g, const vj_cfg *c,
             }
         }
     }
-    /* barra de scroll */
-    if (ROW_N > vis) {
-        float bh = (float)(vis * rh) * vis / ROW_N;
-        float by = 92 + (float)(vis * rh - bh) * top / (ROW_N - vis);
+    if (nrows > vis) {
+        float bh = (float)(vis * rh) * vis / nrows;
+        float by = 92 + (float)(vis * rh - bh) * top / (nrows - vis);
         vita2d_draw_rectangle(x1 + 22, 92, 3, vis * rh, C_PANEL_LINE);
         vita2d_draw_rectangle(x1 + 21, by, 5, bh, C_GLOW);
     }
 
-    /* derecha: vista previa + ayuda */
-    text(612, 104, 0.8f, C_TEXT_2, "Vista previa");
-    draw_preview(c, 612, 120, 300);
-    text_wrap(612, 330, 0.78f, C_TEXT_2, row_help(row), 300);
-    if (ingame)
-        text_wrap(612, 450, 0.72f, C_TEXT_3,
-                  "En juego: L+R+START este menú · L+R+X salir · "
-                  "L+R+Triángulo teclado virtual", 300);
+    /* derecha: vista previa (por juego) + ayuda */
+    y = 104;
+    if (mode != SET_GLOBAL) {
+        text(612, 104, 0.8f, C_TEXT_2, L("Preview", "Vista previa",
+                                         "Pré-visualização"));
+        draw_preview(c, 612, 120, 300);
+        y = 330;
+    }
+    y = text_wrap(612, y, 0.78f, C_TEXT_2, row_help(rows[sel], mode), 300);
+    if (mode == SET_INGAME)
+        text_wrap(612, y + 8, 0.72f, C_TEXT_3,
+                  L("In game: L+R+START this menu · L+R+X quit · "
+                    "L+R+Triangle virtual keypad",
+                    "En juego: L+R+START este menú · L+R+X salir · "
+                    "L+R+Triángulo teclado virtual",
+                    "No jogo: L+R+START este menu · L+R+X sair · "
+                    "L+R+Triângulo teclado virtual"), 300);
 
     vita2d_draw_rectangle(0, 498, SCR_W, 46, C_BAR);
     vita2d_draw_rectangle(0, 498, SCR_W, 1, C_PANEL_LINE);
     x0 = 48;
-    if (row == ROW_RESET) x0 += hint(x0, 522, 'x', NULL, "Restaurar") + 28;
-    else x0 += hint(x0, 522, 0, "< >", "Cambiar") + 28;
-    if (ingame) {
-        x0 += hint(x0, 522, 'o', NULL, "Volver al juego") + 28;
-        hint(x0, 522, 't', NULL, "Salir a la biblioteca");
+    if (rows[sel] == ROW_RESET)
+        x0 += hint(x0, 522, 'x', NULL, L("Restore", "Restaurar",
+                                         "Restaurar")) + 28;
+    else
+        x0 += hint(x0, 522, 0, "< >", L("Change", "Cambiar", "Mudar")) + 28;
+    if (mode == SET_INGAME) {
+        x0 += hint(x0, 522, 'o', NULL, L("Back to game", "Volver al juego",
+                                         "Voltar ao jogo")) + 28;
+        hint(x0, 522, 't', NULL, L("Quit to library",
+                                   "Salir a la biblioteca",
+                                   "Sair para a biblioteca"));
     } else {
-        hint(x0, 522, 'o', NULL, "Guardar y volver");
+        hint(x0, 522, 'o', NULL, L("Save and go back", "Guardar y volver",
+                                   "Salvar e voltar"));
     }
     vita2d_end_drawing();
     vita2d_swap_buffers();
 }
 
-/* Devuelve 1 si se guardaron cambios; en el juego, 2 = salir del juego.
- * *out queda con los ajustes vigentes. */
-static int settings_run(scene *sc, const vj_game *g, int ingame, vj_cfg *out) {
+/* g = NULL -> opciones globales. Devuelve 1 si se guardaron cambios; en
+ * el juego, 2 = salir del juego. *out queda con los ajustes vigentes. */
+static int settings_run(scene *sc, const vj_game *g, int mode, vj_cfg *out) {
     static vj_cfg c, orig;
+    static int rows[ROW_N];
     SceCtrlData pad;
     unsigned int old = ~0u;
-    int row = 0, top = 0, hold = 0, quit = 0;
-    cfg_load(g, &c);
+    int sel = 0, top = 0, hold = 0, quit = 0, nrows, changed;
+    int lang0 = vj_lang, fps0 = vj_show_fps;
+    const char *subtitle = g ? g->name : L("All games", "Todos los juegos",
+                                           "Todos os jogos");
+    nrows = settings_rows(mode, rows);
+    if (mode == SET_GLOBAL) cfg_global_get(&c);
+    else cfg_load(g, &c);
     orig = c;
     for (;;) {
         unsigned int now, down;
+        int r = rows[sel];
         sceCtrlPeekBufferPositive(0, &pad, 1);
         now = pad.buttons;
         if (pad.ly < 50) now |= SCE_CTRL_UP;
@@ -1119,39 +1293,46 @@ static int settings_run(scene *sc, const vj_game *g, int ingame, vj_cfg *out) {
         }
         old = now;
 
-        if (down & SCE_CTRL_UP) row = wrap(row, -1, ROW_N);
-        if (down & SCE_CTRL_DOWN) row = wrap(row, 1, ROW_N);
-        if (down & (SCE_CTRL_LEFT | SCE_CTRL_LTRIGGER)) row_change(&c, row, -1);
+        if (down & SCE_CTRL_UP) sel = wrap(sel, -1, nrows);
+        if (down & SCE_CTRL_DOWN) sel = wrap(sel, 1, nrows);
+        if (down & (SCE_CTRL_LEFT | SCE_CTRL_LTRIGGER)) row_change(&c, r, -1);
         if (down & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER | SCE_CTRL_CROSS)) {
-            if (row == ROW_RESET) {
+            if (r == ROW_RESET) {
                 if (down & SCE_CTRL_CROSS) {
                     int aw = c.auto_w, ah = c.auto_h;
-                    cfg_defaults(&c);
+                    if (mode == SET_GLOBAL) {
+                        cfg_factory(&c);
+                        vj_show_fps = 0;
+                    } else {
+                        cfg_defaults(&c);
+                    }
                     c.auto_w = aw;
                     c.auto_h = ah;
                 }
             } else {
-                row_change(&c, row, 1);
+                row_change(&c, r, 1);
             }
         }
         if (down & SCE_CTRL_CIRCLE) break;
-        if (ingame && (down & SCE_CTRL_TRIANGLE)) {
+        if (mode == SET_INGAME && (down & SCE_CTRL_TRIANGLE)) {
             quit = 1;
             break;
         }
-        if (row < top) top = row;
-        if (row >= top + 10) top = row - 9;
+        if (sel < top) top = sel;
+        if (sel >= top + 10) top = sel - 9;
 
         sc->frame++;
-        draw_settings(sc, g, &c, row, top, ingame);
+        draw_settings(sc, subtitle, &c, rows, nrows, sel, top, mode);
     }
     if (out) *out = c;
-    if (memcmp(&c, &orig, sizeof(c)) != 0) {
-        cfg_save(g, &c);
-        vj_log("launcher: ajustes de '%s' guardados", g->name);
-        return quit ? 2 : 1;
+    changed = memcmp(&c, &orig, sizeof(c)) != 0 ||
+              lang0 != vj_lang || fps0 != vj_show_fps;
+    if (changed) {
+        if (mode == SET_GLOBAL) cfg_global_save(&c);
+        else cfg_save(g, &c);
+        vj_log("launcher: ajustes de '%s' guardados", subtitle);
     }
-    return quit ? 2 : 0;
+    return quit ? 2 : changed;
 }
 
 /* Menú del juego: lo llama lcd.c desde el hilo de la VM (juego en pausa).
@@ -1174,12 +1355,14 @@ int launcher_game_menu(const vj_game *g) {
     }
     vj_log("menú del juego abierto");
     vita2d_set_vblank_wait(1);
-    r = settings_run(&sc, g, 1, &c);
+    r = settings_run(&sc, g, SET_INGAME, &c);
     /* no devolver el control con un botón aún pulsado (llegaría al juego) */
     do {
+        static int rows[ROW_N];
+        int n = settings_rows(SET_INGAME, rows);
         sceCtrlPeekBufferPositive(0, &pad, 1);
         sc.frame++;
-        draw_settings(&sc, g, &c, 0, 0, 1);
+        draw_settings(&sc, g->name, &c, rows, n, 0, 0, SET_INGAME);
     } while (pad.buttons & (SCE_CTRL_CIRCLE | SCE_CTRL_TRIANGLE |
                             SCE_CTRL_CROSS | SCE_CTRL_START));
     vita2d_wait_rendering_done();
@@ -1267,8 +1450,13 @@ int launcher_run(vj_game *out, int preselect) {
         }
         was_touch = touch.reportNum > 0;
 
+        if (down & SCE_CTRL_SELECT) {
+            settings_run(&sc, NULL, SET_GLOBAL, NULL);
+            old = ~0u;
+            continue;
+        }
         if ((down & SCE_CTRL_SQUARE) && sc.sel < sc.n) {
-            settings_run(&sc, &sc.games[sc.sel], 0, NULL);
+            settings_run(&sc, &sc.games[sc.sel], SET_GAME, NULL);
             old = ~0u;  /* que el ○ de salir de ajustes no cierre esto */
             continue;
         }
@@ -1399,17 +1587,27 @@ static void draw_loading(float fade) {
 
     /* estado real: hasta que el MIDlet empieza a pintar, arranque de
      * la VM; después, el juego ya corre y carga sus recursos */
-    status = ld.install ? "Instalando el juego"
-             : ld.midlet_frames ? "Cargando recursos del juego"
-                                : "Arrancando la máquina virtual Java";
+    status = ld.install ? L("Installing the game", "Instalando el juego",
+                            "Instalando o jogo")
+             : ld.midlet_frames ? L("Loading game resources",
+                                    "Cargando recursos del juego",
+                                    "Carregando recursos do jogo")
+                                : L("Starting the Java virtual machine",
+                                    "Arrancando la máquina virtual Java",
+                                    "Iniciando a máquina virtual Java");
     text(cx - text_w(0.85f, status) / 2.0f, ty + tile + 176, 0.85f,
          C_TEXT_2, status);
     snprintf(buf, sizeof(buf), "%d s", (int)t);
     text(cx - text_w(0.7f, buf) / 2.0f, ty + tile + 202, 0.7f, C_TEXT_3,
          buf);
     if (!ld.install) {
-        const char *keys = "En juego:  L+R+START menú   ·   L+R+X salir   ·   "
-                           "L+R+Triángulo teclado virtual";
+        const char *keys =
+            L("In game:  L+R+START menu   ·   L+R+X quit   ·   "
+              "L+R+Triangle virtual keypad",
+              "En juego:  L+R+START menú   ·   L+R+X salir   ·   "
+              "L+R+Triángulo teclado virtual",
+              "No jogo:  L+R+START menu   ·   L+R+X sair   ·   "
+              "L+R+Triângulo teclado virtual");
         text(cx - text_w(0.7f, keys) / 2.0f, SCR_H - 22, 0.7f, C_TEXT_3,
              keys);
     }
@@ -1479,7 +1677,8 @@ void launcher_install_start(const char *jar) {
     snprintf(g.jar, sizeof(g.jar), "%s", jar);
     fill_from_manifest(&g);
     if (!g.name[0]) snprintf(g.name, sizeof(g.name), "%s", base ? base + 1 : jar);
-    snprintf(g.vendor, sizeof(g.vendor), "Instalando…");
+    snprintf(g.vendor, sizeof(g.vendor), "%s",
+             L("Installing…", "Instalando…", "Instalando…"));
     ld.install = 1;
     launcher_loading_start(&g);
     vita_lcd_loading_hook = hold_hook;

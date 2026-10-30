@@ -43,12 +43,23 @@ typedef struct {
 
 extern const int vj_res[][2];
 extern const int vj_res_n;
-extern const char *const vj_btn_name[VJ_BTN_N];
 extern const int vj_key_codes[];
-extern const char *const vj_key_names[];
 extern const int vj_keys_n;
 
+/* Idioma: 0 inglés, 1 español, 2 portugués. */
+extern int vj_lang;
+extern int vj_show_fps;
+const char *vj_tr(const char *en, const char *es, const char *pt);
+#define L(en, es, pt) vj_tr(en, es, pt)
+
+const char *cfg_btn_name(int i);
+
+/* Valores de fábrica / por defecto globales (global.cfg). */
+void cfg_factory(vj_cfg *c);
 void cfg_defaults(vj_cfg *c);
+void cfg_global_load(void);
+void cfg_global_get(vj_cfg *c);
+void cfg_global_save(const vj_cfg *c);
 /* Lee el .cfg (o los valores por defecto) y detecta la resolución. */
 void cfg_load(const vj_game *g, vj_cfg *c);
 void cfg_save(const vj_game *g, const vj_cfg *c);

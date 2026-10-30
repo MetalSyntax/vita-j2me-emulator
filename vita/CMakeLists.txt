@@ -23,7 +23,7 @@ set(VITA_APP_NAME "VitaJ2ME")
 # TITLEID de exactamente 9 caracteres (el instalador da 0xF0030000 si no).
 set(VITA_TITLEID "VITAJ2ME0")
 set(VITA_VPKNAME "vitaj2me-bringup")
-set(VITA_VERSION "00.60")
+set(VITA_VERSION "01.00")
 
 add_definitions(-D_GNU_SOURCE)
 

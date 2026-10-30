@@ -1,11 +1,11 @@
 /* vita_arm/midp/lcd.c — Fase 4: port PSP -> Vita (vita2d).
  *
  * Origen: psp_mips/midp/lcd.c (GU textured-quad + swizzle + VRAM directa).
- * Arquitectura conservada: J2ME dibuja en scbuff RGB565 (hasta 640x640,
+ * Arquitectura conservada: J2ME dibuja en scbuff RGB565 (hasta 864x864,
  * vscr_w/h dinámicos); el flush lo presenta en pantalla.
  * Cambios:
  *  - pspgu/pspge/pspdisplay + swizzle_fast + advancedBlit + vram 0x04000000
- *    -> vita2d: textura 640x640 U5U6U5_BGR (cero conversiones: el 565 va
+ *    -> vita2d: textura 864x864 U5U6U5_BGR (cero conversiones: el 565 va
  *    directo a GPU) + draw_texture_part_scale con los mismos 3 modos PSP
  *    (centrado 1:1, aspect-fit, stretch) + rotación 90.
  *  - Resolución: Vita 960x544 = 2x exacto de 480x272. Un juego clásico
@@ -37,9 +37,9 @@ extern "C" {
 #define VITA_SCR_W 960
 #define VITA_SCR_H 544
 
-/* Pantalla virtual máxima: 640 cubre los juegos táctiles de Nokia
- * (640x360 / 360x640); el offscreen y la textura van a ese tamaño. */
-#define VSCR_MAX 640
+/* Pantalla virtual máxima: 864 cubre los juegos táctiles de 480x800 y
+ * 480x854 (y los Nokia 640x360); offscreen y textura van a ese tamaño. */
+#define VSCR_MAX 864
 
 extern const unsigned short DukeTango[];
 

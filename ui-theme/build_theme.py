@@ -1023,7 +1023,7 @@ def splash(w, h, label=None):
     top = int(h * 0.26)
     im.alpha_composite(brand_mark(icon), ((w - icon) // 2, top))
     wordmark(im, w // 2, top + icon + int(14 * k), k,
-             sub="Java ME para PS Vita")
+             sub="Java ME for PS Vita")
     if label:
         d = ImageDraw.Draw(im)
         f = font(False, max(10, int(11 * k)))
@@ -1124,7 +1124,8 @@ def build_livearea():
     st.alpha_composite(brand_mark(56), (24, 51))
     d = ImageDraw.Draw(st)
     d.text((94, 52), "VitaJ2ME", font=font(True, 26), fill=rgb(ON_DARK))
-    d.text((95, 86), "Iniciar", font=font(False, 15), fill=rgb(ON_DARK_2))
+    d.text((95, 86), "Java ME for PS Vita", font=font(False, 15),
+           fill=rgb(ON_DARK_2))
     indexed(st).save(LIVEAREA / "startup.png", optimize=True)
     indexed(splash(960, 544)).save(LIVEAREA / "pic0.png", optimize=True)
     print("livearea/: icon0, bg0, startup, pic0 (indexados)")

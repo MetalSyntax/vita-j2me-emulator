@@ -65,3 +65,4 @@ pspkvm/midp/build/javacall_vita/output/
 # taparía sin querer estos .zip -- se reincluyen a propósito.
 !/_prebuilt/**/*.zip
 !/_prebuilt/**/*.a
+release/

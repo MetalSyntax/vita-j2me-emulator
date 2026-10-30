@@ -16,6 +16,7 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/processmgr.h>
 #include <vita2d.h>
 
 #include <stdio.h>
@@ -48,22 +49,45 @@ extern int vita_lcd_mirror;
 extern int vita_lcd_fps_cap;
 extern int vita_sleep_pct;
 extern volatile int vita_pad_toggle_request;
+extern volatile unsigned long vita_flush_count;
 
 /* Resoluciones típicas de móviles Java (máximo 640: tamaño del offscreen). */
 const int vj_res[][2] = {
     {128, 128}, {128, 160}, {132, 176}, {176, 204}, {176, 208},
     {176, 220}, {208, 208}, {240, 320}, {320, 240}, {240, 400},
     {400, 240}, {240, 432}, {432, 240}, {352, 416}, {360, 640},
-    {640, 360}, {480, 272},
+    {640, 360}, {480, 272}, {320, 480}, {480, 320}, {480, 800},
+    {800, 480}, {480, 854}, {854, 480},
 };
 const int vj_res_n = sizeof(vj_res) / sizeof(vj_res[0]);
 
+/* Idioma de la interfaz (global.cfg): 0 inglés (defecto), 1 español,
+ * 2 portugués. */
+int vj_lang = 0;
+int vj_show_fps = 0;
+
+const char *vj_tr(const char *en, const char *es, const char *pt) {
+    return vj_lang == 1 ? es : vj_lang == 2 ? pt : en;
+}
+
 /* Orden fijo: es el del fichero .cfg (map=...). */
-const char *const vj_btn_name[VJ_BTN_N] = {
-    "Cruceta arriba", "Cruceta abajo", "Cruceta izquierda", "Cruceta derecha",
-    "Cruz", "Círculo", "Cuadrado", "Triángulo", "L", "R", "SELECT", "START",
-    "Stick arriba", "Stick abajo", "Stick izquierda", "Stick derecha",
+static const char *const btn_names[3][VJ_BTN_N] = {
+    {"D-pad up", "D-pad down", "D-pad left", "D-pad right", "Cross",
+     "Circle", "Square", "Triangle", "L", "R", "SELECT", "START",
+     "Stick up", "Stick down", "Stick left", "Stick right"},
+    {"Cruceta arriba", "Cruceta abajo", "Cruceta izquierda",
+     "Cruceta derecha", "Cruz", "Círculo", "Cuadrado", "Triángulo", "L", "R",
+     "SELECT", "START", "Stick arriba", "Stick abajo", "Stick izquierda",
+     "Stick derecha"},
+    {"Direcional cima", "Direcional baixo", "Direcional esquerda",
+     "Direcional direita", "Xis", "Círculo", "Quadrado", "Triângulo", "L",
+     "R", "SELECT", "START", "Analógico cima", "Analógico baixo",
+     "Analógico esquerda", "Analógico direita"},
 };
+
+const char *cfg_btn_name(int i) {
+    return btn_names[vj_lang][i];
+}
 /* Bits de keypress.c para el stick (VITA_CTRL_ANALOG_*). */
 static const unsigned int btn_mask[VJ_BTN_N] = {
     SCE_CTRL_UP, SCE_CTRL_DOWN, SCE_CTRL_LEFT, SCE_CTRL_RIGHT,
@@ -84,9 +108,15 @@ const int vj_key_codes[] = {
     JAVACALL_KEY_SOFT2, JAVACALL_KEY_CLEAR,
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '#',
 };
-const char *const vj_key_names[] = {
-    "Nada", "Arriba", "Abajo", "Izquierda", "Derecha", "OK / Disparo",
-    "Soft izquierda", "Soft derecha", "Borrar",
+static const char *const key_names[3][9] = {
+    {"None", "Up", "Down", "Left", "Right", "OK / Fire", "Left soft key",
+     "Right soft key", "Clear"},
+    {"Nada", "Arriba", "Abajo", "Izquierda", "Derecha", "OK / Disparo",
+     "Soft izquierda", "Soft derecha", "Borrar"},
+    {"Nada", "Cima", "Baixo", "Esquerda", "Direita", "OK / Disparo",
+     "Soft esquerda", "Soft direita", "Apagar"},
+};
+static const char *const digit_names[] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#",
 };
 const int vj_keys_n = sizeof(vj_key_codes) / sizeof(vj_key_codes[0]);
@@ -94,11 +124,13 @@ const int vj_keys_n = sizeof(vj_key_codes) / sizeof(vj_key_codes[0]);
 const char *cfg_key_name(int code) {
     int i;
     for (i = 0; i < vj_keys_n; i++)
-        if (vj_key_codes[i] == code) return vj_key_names[i];
+        if (vj_key_codes[i] == code)
+            return i < 9 ? key_names[vj_lang][i] : digit_names[i - 9];
     return "?";
 }
 
-void cfg_defaults(vj_cfg *c) {
+/* Valores de fábrica. */
+void cfg_factory(vj_cfg *c) {
     memset(c, 0, sizeof(*c));
     c->scale = VJ_SCALE_FIT;
     c->keypad = VJ_PAD_AUTO;
@@ -106,13 +138,49 @@ void cfg_defaults(vj_cfg *c) {
     memcpy(c->map, btn_default, sizeof(c->map));
 }
 
+/* Opciones globales: idioma, contador de FPS y los valores por defecto
+ * con los que arranca cualquier juego sin .cfg propio. */
+#define GLOBAL_CFG CFG_DIR "/global.cfg"
+static vj_cfg global_def;
+static int global_loaded = 0;
+
+static void cfg_parse(const char *path, vj_cfg *c);
+static void cfg_write(FILE *f, const vj_cfg *c);
+
+void cfg_global_load(void) {
+    cfg_factory(&global_def);
+    cfg_parse(GLOBAL_CFG, &global_def);
+    global_def.res = global_def.rotate = global_def.mirror = 0;
+    global_loaded = 1;
+}
+
+void cfg_global_get(vj_cfg *c) {
+    if (!global_loaded) cfg_global_load();
+    *c = global_def;
+}
+
+void cfg_global_save(const vj_cfg *c) {
+    FILE *f;
+    global_def = *c;
+    global_loaded = 1;
+    sceIoMkdir(CFG_DIR, 0777);
+    f = fopen(GLOBAL_CFG, "w");
+    if (!f) return;
+    fprintf(f, "lang=%d\nfps=%d\n", vj_lang, vj_show_fps);
+    cfg_write(f, c);
+    fclose(f);
+}
+
+void cfg_defaults(vj_cfg *c) {
+    cfg_global_get(c);
+}
+
 static void cfg_path(const vj_game *g, char *out, int cap) {
     snprintf(out, cap, CFG_DIR "/%d.cfg", g->suite_id);
 }
 
 void cfg_load(const vj_game *g, vj_cfg *c) {
-    char path[96], line[256];
-    FILE *f;
+    char path[96];
     cfg_defaults(c);
     if (jar_detect_screen(g->jar, &c->auto_w, &c->auto_h)) {
         vj_log("cfg: '%s' pantalla detectada en el JAR: %dx%d", g->name,
@@ -124,7 +192,12 @@ void cfg_load(const vj_game *g, vj_cfg *c) {
                g->name);
     }
     cfg_path(g, path, sizeof(path));
-    f = fopen(path, "r");
+    cfg_parse(path, c);
+}
+
+static void cfg_parse(const char *path, vj_cfg *c) {
+    char line[256];
+    FILE *f = fopen(path, "r");
     if (!f) return;
     while (fgets(line, sizeof(line), f)) {
         char *v = strchr(line, '=');
@@ -148,6 +221,11 @@ void cfg_load(const vj_game *g, vj_cfg *c) {
                 c->keypad = VJ_PAD_AUTO;
         } else if (!strcmp(line, "touch")) {
             c->touch = atoi(v) ? 1 : 0;
+        } else if (!strcmp(line, "lang")) {
+            vj_lang = atoi(v);
+            if (vj_lang < 0 || vj_lang > 2) vj_lang = 0;
+        } else if (!strcmp(line, "fps")) {
+            vj_show_fps = atoi(v) ? 1 : 0;
         } else if (!strcmp(line, "rotate")) {
             c->rotate = atoi(v) & 3;
         } else if (!strcmp(line, "mirror")) {
@@ -169,7 +247,6 @@ void cfg_load(const vj_game *g, vj_cfg *c) {
 void cfg_save(const vj_game *g, const vj_cfg *c) {
     char path[96];
     FILE *f;
-    int i;
     sceIoMkdir(CFG_DIR, 0777);
     cfg_path(g, path, sizeof(path));
     f = fopen(path, "w");
@@ -177,6 +254,12 @@ void cfg_save(const vj_game *g, const vj_cfg *c) {
         vj_log("cfg: no se pudo escribir %s", path);
         return;
     }
+    cfg_write(f, c);
+    fclose(f);
+}
+
+static void cfg_write(FILE *f, const vj_cfg *c) {
+    int i;
     if (c->res > 0)
         fprintf(f, "res=%dx%d\n", vj_res[c->res - 1][0], vj_res[c->res - 1][1]);
     else
@@ -187,7 +270,6 @@ void cfg_save(const vj_game *g, const vj_cfg *c) {
     for (i = 0; i < VJ_BTN_N; i++)
         fprintf(f, i ? ",%d" : "%d", c->map[i]);
     fprintf(f, "\n");
-    fclose(f);
 }
 
 void cfg_screen(const vj_cfg *c, int *w, int *h) {
@@ -396,9 +478,28 @@ static void draw_arrow(float cx, float cy, float s, int code,
     }
 }
 
+/* Contador de FPS (opción global): frames presentados por segundo. */
+static void draw_fps(void) {
+    static SceUInt64 t0 = 0;
+    static unsigned long f0 = 0;
+    static int fps = 0;
+    char buf[16];
+    SceUInt64 now = sceKernelGetProcessTimeWide();
+    if (now - t0 >= 1000000ull) {
+        fps = (int)((vita_flush_count - f0) * 1000000ull / (now - t0));
+        f0 = vita_flush_count;
+        t0 = now;
+    }
+    snprintf(buf, sizeof(buf), "%d FPS", fps);
+    vita2d_draw_rectangle(6, 6, 74, 26, RGBA8(0x00, 0x00, 0x00, 0xA0));
+    vita2d_pgf_draw_text(pad_font, 12, 26, RGBA8(0x7F, 0xFF, 0x9F, 0xFF),
+                         0.9f, buf);
+}
+
 /* Hilo de la VM, dentro del frame de lcd.c. */
 static void pad_overlay(void) {
     int i;
+    if (vj_show_fps && pad_font) draw_fps();
     for (i = 0; i < 2; i++)
         if (cur.panel[i][2] > 0)
             vita2d_draw_rectangle(cur.panel[i][0], cur.panel[i][1],
@@ -566,8 +667,9 @@ void cfg_apply(const vj_cfg *c, int live) {
     }
     vita_keymap_custom_n = n;
 
-    if (cur.nkeys && !pad_font) pad_font = vita2d_load_default_pgf();
-    vita_lcd_overlay_hook = cur.nkeys ? pad_overlay : 0;
+    if ((cur.nkeys || vj_show_fps) && !pad_font)
+        pad_font = vita2d_load_default_pgf();
+    vita_lcd_overlay_hook = (cur.nkeys || vj_show_fps) ? pad_overlay : 0;
     /* siempre: también atiende L+R+△ (mostrar/ocultar teclado) */
     if (touch_tid < 0) {
         touch_tid = sceKernelCreateThread("vj_touch", touch_thread, 0x10000100,
