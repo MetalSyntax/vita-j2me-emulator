@@ -49,6 +49,8 @@ app. See `README.md` for the full guide.
 - WAV playback read the wrong memory.
 - Crash at the end of installing a game (the install screen kept drawing
   while the VM shut the graphics down).
+- JARs that could never install (no manifest) were retried on every start,
+  with a black screen and a restart each time. They are now skipped.
 - 127 MB Java heap that left the system with only 512 KB; it is now capped
   at 64 MB.
 
@@ -56,9 +58,16 @@ app. See `README.md` for the full guide.
 
 - Heavy games run at 6-15 FPS: the VM is an interpreter, with no JIT.
 - AMR audio is not supported.
-- Going back to the library restarts the app (one game per process).
+- One game per process: the Java VM starts again for every game, and going
+  back to the library restarts the app.
+- Changing the resolution restarts the game (games read the screen size
+  only at startup). Set it from the library before playing.
+- Automatic screen size is a best guess; some games need a manual size or
+  rotation (for example A Good Day to Die Hard).
+- Android games renamed to `.jar` are not Java ME games and are skipped.
 
 ## Tested on hardware
 
-Soul of Darkness, Asphalt Nitro and A Good Day to Die Hard (Gameloft).
+Soul of Darkness, Asphalt 6 Adrenaline, Asphalt Nitro, Dungeon Hunter III
+and A Good Day to Die Hard (Gameloft).
 Please send reports with `ux0:data/vitaj2me/logs/*.log` attached.

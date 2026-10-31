@@ -225,6 +225,7 @@
 - **Fix:** `pending_install_pick` descarta antes del lote un `.jar` sin `.jad` y sin MANIFEST (`jar_has_manifest` en `launcher.c`, mismo lector que la detección de resolución). Ya no se lanza el instalador ni se relanza la app por ellos.
 - **Salida colgada (bringup-075):** la biblioteca se quedó en pantalla 2 h tras intentar salir; no hay traza de `biblioteca: salir` ni dump. Sin evidencia de la causa. Cambio: al pulsar ○ se registra `launcher: círculo pulsado -> salir` y se sale sin esperar a la GPU ni liberar texturas (el proceso termina igual). El próximo log dirá si ○ llegó.
 - Pendiente en HW: arranque sin pantalla negra ni relanzamientos; salir con ○ tras cambiar de juego dos veces.
+- **HW (usuario, mismo día):** borrados por FTP los 26 JAR de Android; Asphalt 6, SoD y Dungeon Hunter 3 bien; Die Hard bien con resolución ajustada a mano. Sin cuelgue al salir en esa prueba (solo un juego). `release/VitaJ2ME-v1.0.vpk` regenerado con este eboot; límites actualizados en README/RELEASE (una VM por juego, cambiar resolución reinicia, detección aproximada, JAR de Android no soportados).
 
 ## Sesión 53 — Asphalt 6 cortado: resolución deducida del bytecode (2026-10-30, foto del usuario, SIN probar en HW)
 - **Evidencia:** captura de Asphalt 6 v1.2.0: menú dibujado para una pantalla más ancha, cortado en el borde derecho de una ventana 240x320. Su JAR no declara tamaño (ni manifiesto, ni nombre, ni PNG a pantalla completa: imágenes en contenedores propios) -> caía en 240x320.

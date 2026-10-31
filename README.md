@@ -102,8 +102,17 @@ else applies immediately.
   original phone's synthesizer.
 - Seeking inside MP3 is limited to rewinding to the start, which is what
   games use.
-- One game per process: going back to the library restarts the app. This is
-  quick.
+- One game per process: the Java VM starts again for every game, and going
+  back to the library restarts the app. Preloading hides most of the wait
+  for the last game you played.
+- Changing the resolution restarts the game, because J2ME games read the
+  screen size only once, when they start. Set it from the library (Square)
+  before playing.
+- Automatic screen size is a best guess. A few games need a manual size or
+  rotation (for example A Good Day to Die Hard).
+- Only Java ME games work. `.jar` files made from Android games (no
+  `META-INF/MANIFEST.MF`, Android classes inside) are skipped and written
+  to the log.
 
 ## Logs and bug reports
 
