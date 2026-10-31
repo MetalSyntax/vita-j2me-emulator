@@ -656,6 +656,12 @@ static int pending_install_pick(FILE *list) {
             /* ya en la biblioteca (un .jad apunta a otro JAR: regla vieja) */
             memset(&ent, 0, sizeof(ent));
             continue;
+        } else if (!is_jad && !jar_has_manifest(fpath)) {
+            log_line("  games/%s: sin META-INF/MANIFEST.MF, no es un juego "
+                     "J2ME (¿APK de Android convertido?) — se omite",
+                     ent.d_name);
+            memset(&ent, 0, sizeof(ent));
+            continue;
         } else if (mver < MARK_VERSION) {
             /* Diseño anterior (sin -D, bug #22): reintentar de oficio. */
             log_line("  games/%s: mark v%d obsoleto — se reintenta",

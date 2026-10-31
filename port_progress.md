@@ -219,6 +219,13 @@
   - **Pendiente de HW (igual que el #17):** falta subir `_prebuilt/data/lib/*.png` actualizado por FTP y confirmar visualmente en consola que el AMS carga los PNG sueltos y no un `skin.bin` viejo — si el próximo log de consola muestra la paleta 2006 sin cambios pese a los PNG nuevos, la hipótesis de "`skin.bin` no se usa" queda refutada y hay que investigar el romizado real.
   - **Sin commitear:** todo lo de esta sesión queda en el árbol de trabajo junto con los fixes #16/#17 de la sesión 22, a la espera de la verificación en consola (mismo criterio que el resto del proyecto: un commit por bug/feature confirmado).
 
+## Sesión 54 — los 26 JAR "que no se instalan" son de Android; traza de la salida (2026-10-30, logs HW 068-075, SIN probar en HW)
+
+- **Lote (jvm-068..070):** los 26 dan `InvalidJadException: Reason = 36` (`CORRUPT_JAR`) en `installStep5`: no tienen `META-INF/MANIFEST.MF`. Revisados en el Mac: no traen manifiesto ni recursos y sus clases usan `android/app`, `android/content`, `com/google/android/gms`… Son código de APK de Android pasado a `.jar`, no juegos J2ME: ninguna VM J2ME puede ejecutarlos. No es un bug del emulador. Cada arranque los reintentaba (3 relanzamientos con pantalla negra) hasta el tope de 3 intentos.
+- **Fix:** `pending_install_pick` descarta antes del lote un `.jar` sin `.jad` y sin MANIFEST (`jar_has_manifest` en `launcher.c`, mismo lector que la detección de resolución). Ya no se lanza el instalador ni se relanza la app por ellos.
+- **Salida colgada (bringup-075):** la biblioteca se quedó en pantalla 2 h tras intentar salir; no hay traza de `biblioteca: salir` ni dump. Sin evidencia de la causa. Cambio: al pulsar ○ se registra `launcher: círculo pulsado -> salir` y se sale sin esperar a la GPU ni liberar texturas (el proceso termina igual). El próximo log dirá si ○ llegó.
+- Pendiente en HW: arranque sin pantalla negra ni relanzamientos; salir con ○ tras cambiar de juego dos veces.
+
 ## Sesión 53 — Asphalt 6 cortado: resolución deducida del bytecode (2026-10-30, foto del usuario, SIN probar en HW)
 - **Evidencia:** captura de Asphalt 6 v1.2.0: menú dibujado para una pantalla más ancha, cortado en el borde derecho de una ventana 240x320. Su JAR no declara tamaño (ni manifiesto, ni nombre, ni PNG a pantalla completa: imágenes en contenedores propios) -> caía en 240x320.
 - **Análisis:** en su bytecode, `sipush 640` x132 y `sipush 360` x165 -> juego fijo de **640x360** (Nokia horizontal).

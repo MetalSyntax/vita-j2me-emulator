@@ -457,6 +457,15 @@ done:
     return out;
 }
 
+/* ¿Tiene MANIFEST? Sin él el instalador de MIDP da CORRUPT_JAR (36):
+ * p.ej. código de APK de Android pasado a .jar (HW 068-070). */
+int jar_has_manifest(const char *jar) {
+    int len;
+    unsigned char *m = jar_entry(jar, "META-INF/MANIFEST.MF", &len);
+    free(m);
+    return m != NULL;
+}
+
 /* Ancho y alto de un PNG del JAR sin descomprimirlo entero: basta con
  * los primeros 24 bytes (firma + IHDR). */
 static int png_size(FILE *f, const unsigned char *ce, int *w, int *h) {
@@ -1569,7 +1578,12 @@ int launcher_run(vj_game *out, int preselect) {
             if (down & SCE_CTRL_CIRCLE) act_back = 1;
         }
 
-        if (act_back) { result = LAUNCHER_EXIT; break; }
+        /* El proceso termina enseguida: nada que liberar (HW 075: la
+         * salida se colgó sin traza; así no espera a la GPU). */
+        if (act_back) {
+            vj_log("launcher: círculo pulsado -> salir");
+            return LAUNCHER_EXIT;
+        }
         if (act_play && sc.sel < sc.n) {
             if (sc.games[sc.sel].missing) continue;  /* sin JAR no arranca */
             if (!sc.games[sc.sel].cls[0]) {

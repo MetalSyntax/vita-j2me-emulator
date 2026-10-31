@@ -49,6 +49,9 @@ void launcher_preload_hold(void);
 /* Resolución de pantalla deducida del JAR (1 = encontrada). */
 int jar_detect_screen(const char *jar, int *w, int *h);
 
+/* 1 si el JAR tiene META-INF/MANIFEST.MF (si no, MIDP no lo instala). */
+int jar_has_manifest(const char *jar);
+
 /* Primitiva compartida con el teclado virtual (gamecfg.c). */
 void fill_rrect(float x, float y, float w, float h, float r, unsigned int c);
 
