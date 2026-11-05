@@ -75,15 +75,17 @@ const char *vj_tr(const char *en, const char *es, const char *pt) {
 static const char *const btn_names[3][VJ_BTN_N] = {
     {"D-pad up", "D-pad down", "D-pad left", "D-pad right", "Cross",
      "Circle", "Square", "Triangle", "L", "R", "SELECT", "START",
-     "Stick up", "Stick down", "Stick left", "Stick right"},
+     "Stick up", "Stick down", "Stick left", "Stick right",
+     "Rear touch left", "Rear touch right"},
     {"Cruceta arriba", "Cruceta abajo", "Cruceta izquierda",
      "Cruceta derecha", "Cruz", "Círculo", "Cuadrado", "Triángulo", "L", "R",
      "SELECT", "START", "Stick arriba", "Stick abajo", "Stick izquierda",
-     "Stick derecha"},
+     "Stick derecha", "Panel trasero izq.", "Panel trasero der."},
     {"Direcional cima", "Direcional baixo", "Direcional esquerda",
      "Direcional direita", "Xis", "Círculo", "Quadrado", "Triângulo", "L",
      "R", "SELECT", "START", "Analógico cima", "Analógico baixo",
-     "Analógico esquerda", "Analógico direita"},
+     "Analógico esquerda", "Analógico direita", "Painel traseiro esq.",
+     "Painel traseiro dir."},
 };
 
 const char *cfg_btn_name(int i) {
@@ -95,12 +97,14 @@ static const unsigned int btn_mask[VJ_BTN_N] = {
     SCE_CTRL_CROSS, SCE_CTRL_CIRCLE, SCE_CTRL_SQUARE, SCE_CTRL_TRIANGLE,
     SCE_CTRL_LTRIGGER, SCE_CTRL_RTRIGGER, SCE_CTRL_SELECT, SCE_CTRL_START,
     0x40000000, 0x80000000, 0x10000000, 0x20000000,
+    0, 0,  /* panel trasero: lo atiende el hilo vj_touch, no keypress.c */
 };
 static const int btn_default[VJ_BTN_N] = {
     JAVACALL_KEY_UP, JAVACALL_KEY_DOWN, JAVACALL_KEY_LEFT, JAVACALL_KEY_RIGHT,
     JAVACALL_KEY_SELECT, '0', '1', '3', '*', '#',
     JAVACALL_KEY_SOFT1, JAVACALL_KEY_SOFT2,
     JAVACALL_KEY_UP, JAVACALL_KEY_DOWN, JAVACALL_KEY_LEFT, JAVACALL_KEY_RIGHT,
+    0, 0,  /* panel trasero: nada por defecto (toques accidentales) */
 };
 
 const int vj_key_codes[] = {
@@ -143,8 +147,8 @@ void cfg_factory(vj_cfg *c) {
 
 int cfg_tap_count(const vj_cfg *c) {
     int i, n = 0;
-    for (i = 0; i < VJ_TAP_BTNS; i++)
-        if (c->tap[i][0] >= 0) n++;
+    for (i = 0; i < VJ_BTN_N; i++)
+        if (!VJ_IS_STICK(i) && c->tap[i][0] >= 0) n++;
     return n + (c->joy[2] > 0);
 }
 
@@ -156,6 +160,7 @@ static int global_loaded = 0;
 
 static void cfg_parse(const char *path, vj_cfg *c);
 static void cfg_write(FILE *f, const vj_cfg *c);
+static void profile_path(const vj_game *g, char *out, int cap);
 
 void cfg_global_load(void) {
     cfg_factory(&global_def);
@@ -192,6 +197,49 @@ static void cfg_path(const vj_game *g, char *out, int cap) {
     snprintf(out, cap, CFG_DIR "/%d.cfg", g->suite_id);
 }
 
+#define PROFILE_DIR CFG_DIR "/profiles"
+
+/* Nombre del juego -> fichero: letras/dígitos, el resto '_' (sin repetir). */
+static void profile_path(const vj_game *g, char *out, int cap) {
+    char safe[96];
+    const unsigned char *p = (const unsigned char *)g->name;
+    int n = 0;
+    for (; *p && n < (int)sizeof(safe) - 1; p++) {
+        int ok = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                 (*p >= '0' && *p <= '9');
+        if (ok) safe[n++] = (char)*p;
+        else if (n && safe[n - 1] != '_') safe[n++] = '_';
+    }
+    while (n && safe[n - 1] == '_') n--;
+    safe[n] = 0;
+    snprintf(out, cap, PROFILE_DIR "/%s.cfg", n ? safe : "game");
+}
+
+int cfg_profile_exists(const vj_game *g) {
+    char path[160];
+    SceIoStat st;
+    profile_path(g, path, sizeof(path));
+    return sceIoGetstat(path, &st) >= 0;
+}
+
+int cfg_profile_export(const vj_game *g, const vj_cfg *c) {
+    char path[160];
+    FILE *f;
+    sceIoMkdir(CFG_DIR, 0777);
+    sceIoMkdir(PROFILE_DIR, 0777);
+    profile_path(g, path, sizeof(path));
+    f = fopen(path, "w");
+    if (!f) {
+        vj_log("perfil: no se pudo escribir %s", path);
+        return 0;
+    }
+    fprintf(f, "# VitaJ2ME: %s\n", g->name);
+    cfg_write(f, c);
+    fclose(f);
+    vj_log("perfil: exportado %s", path);
+    return 1;
+}
+
 void cfg_load(const vj_game *g, vj_cfg *c) {
     char path[96];
     cfg_defaults(c);
@@ -205,6 +253,16 @@ void cfg_load(const vj_game *g, vj_cfg *c) {
                g->name);
     }
     cfg_path(g, path, sizeof(path));
+    {
+        SceIoStat st;
+        if (sceIoGetstat(path, &st) < 0 && cfg_profile_exists(g)) {
+            char pp[160];
+            profile_path(g, pp, sizeof(pp));
+            vj_log("cfg: '%s' sin ajustes propios -> perfil %s", g->name, pp);
+            cfg_parse(pp, c);
+            return;
+        }
+    }
     cfg_parse(path, c);
 }
 
@@ -254,7 +312,7 @@ static void cfg_parse(const char *path, vj_cfg *c) {
                 if (*p == ',') p++;
                 c->tap[i][1] = (int)strtol(p, &p, 10);
                 if (*p == ';') p++;
-                if (c->tap[i][0] < 0 || c->tap[i][1] < 0 || i >= VJ_TAP_BTNS)
+                if (c->tap[i][0] < 0 || c->tap[i][1] < 0 || VJ_IS_STICK(i))
                     c->tap[i][0] = c->tap[i][1] = -1;
             }
         } else if (!strcmp(line, "joy")) {
@@ -486,6 +544,8 @@ static vj_layout cur;
 static vj_cfg cur_cfg;  /* lo último aplicado (para L+R+△) */
 static int cur_touch;
 static int cur_taps;    /* nº de botones con toque (cfg_apply) */
+static int cur_rear;    /* el panel trasero hace algo (tecla o toque) */
+static int rear_now[2], rear_key[2];
 static volatile unsigned char key_down[VJ_PAD_MAX];
 static vita2d_pgf *pad_font;
 static SceUID touch_tid = -1;
@@ -578,8 +638,8 @@ static void tap_hud(void) {
         }
         vita2d_draw_fill_circle(x, y, 6, RGBA8(0xFF, 0xFF, 0xFF, 0x50));
     }
-    for (i = 0; i < VJ_TAP_BTNS; i++) {
-        if (cur_cfg.tap[i][0] < 0 ||
+    for (i = 0; i < VJ_BTN_N; i++) {
+        if (VJ_IS_STICK(i) || cur_cfg.tap[i][0] < 0 ||
             !cfg_game_to_screen(cur_cfg.tap[i][0], cur_cfg.tap[i][1], &x, &y))
             continue;
         vita2d_draw_fill_circle(x, y, 15, RGBA8(0x00, 0x00, 0x00, 0x60));
@@ -653,7 +713,7 @@ int cfg_game_to_screen(int gx, int gy, float *sx, float *sy) {
  * la última que se activó; al soltarla vuelve a la que siga activa (por
  * ejemplo: stick moviendo al personaje + ✕ para atacar, al soltar ✕ el
  * dedo virtual vuelve al joystick). */
-enum { SRC_FINGER = 0, SRC_BTN0 = 1, SRC_JOY = SRC_BTN0 + VJ_TAP_BTNS,
+enum { SRC_FINGER = 0, SRC_BTN0 = 1, SRC_JOY = SRC_BTN0 + VJ_BTN_N,
        SRC_N };
 
 static struct {
@@ -738,11 +798,18 @@ static int touch_thread(SceSize args, void *argp) {
     (void)args; (void)argp;
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT,
                              SCE_TOUCH_SAMPLING_STATE_START);
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK,
+                             SCE_TOUCH_SAMPLING_STATE_START);
     for (;;) {
         sceKernelDelayThread(16 * 1000);
         /* Biblioteca, pantalla de carga o menú delante: nada al MIDlet. */
         if (vita_lcd_loading_hook || suspend_key_input) {
             if (ptr.owner >= 0 || ptr.clock) ptr_release_all();
+            for (i = 0; i < 2; i++)
+                if (rear_key[i]) {
+                    javanotify_key_event(rear_key[i], JAVACALL_KEYRELEASED);
+                    rear_key[i] = 0;
+                }
             pen_id = -1;
             continue;
         }
@@ -803,6 +870,37 @@ static int touch_thread(SceSize args, void *argp) {
             }
         }
 
+        /* panel trasero: mitad izquierda / derecha como dos botones */
+        {
+            int rear[2] = {0, 0};
+            if (cur_rear) {
+                SceTouchData bt;
+                memset(&bt, 0, sizeof(bt));
+                if (sceTouchPeek(SCE_TOUCH_PORT_BACK, &bt, 1) >= 0)
+                    for (i = 0; i < bt.reportNum; i++)
+                        rear[bt.report[i].x >= 960] = 1;
+            }
+            for (i = 0; i < 2; i++) {
+                int b = VJ_REAR0 + i;
+                rear_now[i] = rear[i];
+                if (cur_cfg.tap[b][0] >= 0 || !cur_cfg.map[b]) {
+                    if (rear_key[i]) {  /* se quitó la tecla con él pulsado */
+                        javanotify_key_event(rear_key[i], JAVACALL_KEYRELEASED);
+                        rear_key[i] = 0;
+                    }
+                    continue;
+                }
+                if (rear[i] && !rear_key[i]) {
+                    rear_key[i] = game_key(cur_cfg.map[b], cur_cfg.rotate,
+                                           cur_cfg.mirror);
+                    javanotify_key_event(rear_key[i], JAVACALL_KEYPRESSED);
+                } else if (!rear[i] && rear_key[i]) {
+                    javanotify_key_event(rear_key[i], JAVACALL_KEYRELEASED);
+                    rear_key[i] = 0;
+                }
+            }
+        }
+
         /* botones con toque y stick-joystick */
         if (cur_taps || cur_cfg.joy[2] > 0) {
             unsigned int b;
@@ -810,9 +908,11 @@ static int touch_thread(SceSize args, void *argp) {
             b = pad.buttons;
             /* L+R+algo son atajos del emulador: no tocan el juego */
             if ((b & SCE_CTRL_LTRIGGER) && (b & SCE_CTRL_RTRIGGER)) b = 0;
-            for (i = 0; i < VJ_TAP_BTNS; i++) {
-                ptr.on[SRC_BTN0 + i] = cur_cfg.tap[i][0] >= 0 &&
-                                       (b & btn_mask[i]) != 0;
+            for (i = 0; i < VJ_BTN_N; i++) {
+                int held = i >= VJ_REAR0 ? rear_now[i - VJ_REAR0]
+                                         : (b & btn_mask[i]) != 0;
+                ptr.on[SRC_BTN0 + i] = !VJ_IS_STICK(i) &&
+                                       cur_cfg.tap[i][0] >= 0 && held;
                 ptr.x[SRC_BTN0 + i] = cur_cfg.tap[i][0];
                 ptr.y[SRC_BTN0 + i] = cur_cfg.tap[i][1];
             }
@@ -854,14 +954,17 @@ void cfg_apply(const vj_cfg *c, int live) {
     vita_lcd_filter = c->filter;
     cur_touch = c->touch;
 
+    cur_rear = c->map[VJ_REAR0] || c->map[VJ_REAR0 + 1] ||
+               c->tap[VJ_REAR0][0] >= 0 || c->tap[VJ_REAR0 + 1][0] >= 0;
     cur_taps = 0;
-    for (i = 0; i < VJ_TAP_BTNS; i++)
-        if (c->tap[i][0] >= 0) cur_taps++;
+    for (i = 0; i < VJ_BTN_N; i++)
+        if (!VJ_IS_STICK(i) && c->tap[i][0] >= 0) cur_taps++;
     for (i = 0; i < VJ_BTN_N; i++) {
         if (!c->map[i]) continue;
         /* con toque asignado el botón toca la pantalla, no manda tecla;
          * con el joystick activo, las direcciones del stick tampoco */
-        if (i < VJ_TAP_BTNS ? c->tap[i][0] >= 0 : c->joy[2] > 0) continue;
+        if (!btn_mask[i]) continue;  /* panel trasero: vj_touch */
+        if (!VJ_IS_STICK(i) ? c->tap[i][0] >= 0 : c->joy[2] > 0) continue;
         vita_keymap_custom[n].nativeKey = btn_mask[i];
         vita_keymap_custom[n].javaKey =
             (javacall_key)game_key(c->map[i], c->rotate, c->mirror);

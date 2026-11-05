@@ -10,7 +10,11 @@
 enum { VJ_SCALE_FIT = 1, VJ_SCALE_INT, VJ_SCALE_STRETCH, VJ_SCALE_1X };
 enum { VJ_PAD_AUTO = 0, VJ_PAD_OFF, VJ_PAD_LEFT, VJ_PAD_RIGHT, VJ_PAD_BOTH };
 
-#define VJ_BTN_N 16
+/* 12 botones + 4 direcciones del stick (12..15) + panel trasero izq./der.
+ * (16, 17). El orden es el del .cfg (map=, tap=): solo se añade al final. */
+#define VJ_BTN_N 18
+#define VJ_IS_STICK(i) ((i) >= 12 && (i) < 16)
+#define VJ_REAR0 16
 
 typedef struct {
     int res;            /* 0 = automática; si no, índice+1 en vj_res */
@@ -25,14 +29,12 @@ typedef struct {
     int auto_w, auto_h; /* detectada en el JAR (0 = sin detectar aún) */
     /* Fase A (v1.1): botón -> toque en (x, y) del juego, en píxeles del
      * juego (x < 0 = sin toque: manda la tecla de map[]). Solo los 12
-     * botones; las direcciones del stick usan joy[]. */
+     * botones y el panel trasero; las direcciones del stick usan joy[]. */
     int tap[VJ_BTN_N][2];
     int joy[3];         /* stick izq. = dedo en un joystick dibujado por el
                            juego: centro x, y y radio (r <= 0: apagado) */
     int tap_hud;        /* 1 = marcadores de los toques encima del juego */
 } vj_cfg;
-
-#define VJ_TAP_BTNS 12  /* botones con toque (sin las 4 direcciones del stick) */
 
 typedef struct {
     float x, y, w, h;
@@ -88,6 +90,10 @@ int cfg_screen_to_game(float sx, float sy, int *gx, int *gy);
 int cfg_tap_count(const vj_cfg *c);
 /* Símbolo del botón i (launcher.c): cruz, círculo… o su nombre corto. */
 void vj_button_glyph(int i, float cx, float cy, float s);
+/* Perfiles compartibles (Fase A7): config/profiles/<Nombre>.cfg. Un juego
+ * sin .cfg propio lo carga solo; exportar escribe el del juego. */
+int cfg_profile_exists(const vj_game *g);
+int cfg_profile_export(const vj_game *g, const vj_cfg *c);
 int cfg_last_suite(void);
 void cfg_set_last_suite(int suite_id);
 

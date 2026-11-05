@@ -242,8 +242,9 @@ static int hint(float x, float cy, int kind, const char *pill,
 /* Símbolo del botón i de la Vita (orden de btn_mask en gamecfg.c), para
  * los marcadores de toques. Se llama dentro de un frame de vita2d. */
 void vj_button_glyph(int i, float cx, float cy, float s) {
-    static const char *const names[VJ_TAP_BTNS] = {
+    static const char *const names[VJ_BTN_N] = {
         "", "", "", "", "", "", "", "", "L", "R", "SELECT", "START",
+        "", "", "", "", "<", ">",  /* panel trasero izq./der. */
     };
     if (!font) font = vita2d_load_default_pgf();
     switch (i) {
@@ -263,7 +264,7 @@ void vj_button_glyph(int i, float cx, float cy, float s) {
     case 6: glyph_square(cx, cy, s * 0.85f); break;
     case 7: glyph_triangle(cx, cy + 1, s); break;
     default:
-        if (i >= 0 && i < VJ_TAP_BTNS && font) {
+        if (i >= 0 && i < VJ_BTN_N && font) {
             float sc = 0.62f;
             int w = text_w(sc, names[i]);
             text(cx - w / 2.0f, cy + 6, sc, C_WHITE, names[i]);
@@ -1009,7 +1010,7 @@ static void draw_scene(const scene *sc) {
 enum {
     ROW_LANG, ROW_FPS,
     ROW_RES, ROW_SCALE, ROW_FILTER, ROW_ROTATE, ROW_MIRROR, ROW_PAD,
-    ROW_TOUCH, ROW_TAPS, ROW_SPEED, ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N,
+    ROW_TOUCH, ROW_TAPS, ROW_PROFILE, ROW_SPEED, ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N,
     ROW_N
 };
 enum { SET_GAME, SET_INGAME, SET_GLOBAL };
@@ -1021,7 +1022,7 @@ static int settings_rows(int mode, int *rows) {
         if (mode == SET_GLOBAL) {
             /* resolución y orientación dependen de cada juego */
             if (r == ROW_RES || r == ROW_ROTATE || r == ROW_MIRROR) continue;
-            if (r == ROW_TAPS) continue;
+            if (r == ROW_TAPS || r == ROW_PROFILE) continue;
         } else if (r == ROW_LANG || r == ROW_FPS) {
             continue;
         }
@@ -1147,6 +1148,19 @@ static const char *row_help(int r, int mode) {
                  "táctiles). Requiere reiniciar el juego.",
                  "Tocar o jogo envia o ponteiro ao MIDlet (jogos de toque). "
                  "Requer reiniciar o jogo.");
+    case ROW_PROFILE:
+        return L("Saves this game's settings (buttons, touches, screen) to "
+                 "config/profiles/ with the game's name. Copy that file to "
+                 "share it: a game with no settings of its own loads its "
+                 "profile automatically.",
+                 "Guarda los ajustes de este juego (botones, toques, pantalla) "
+                 "en config/profiles/ con el nombre del juego. Copia ese "
+                 "fichero para compartirlo: un juego sin ajustes propios carga "
+                 "su perfil automáticamente.",
+                 "Salva os ajustes deste jogo (botões, toques, tela) em "
+                 "config/profiles/ com o nome do jogo. Copie esse arquivo "
+                 "para compartilhar: um jogo sem ajustes próprios carrega o "
+                 "perfil automaticamente.");
     case ROW_TAPS:
         return L("For touch games with buttons drawn on the screen: each Vita "
                  "button (and the left stick, as a joystick) can touch a "
@@ -1172,15 +1186,19 @@ static const char *row_help(int r, int mode) {
     }
 }
 
+/* Estado del perfil del juego en la pantalla de ajustes: 0 no hay,
+ * 1 ya existe, 2 recién exportado. */
+static int profile_state;
+
 static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
     int w, h;
     if (r >= ROW_MAP0 && r < ROW_RESET) {
         int b = r - ROW_MAP0;
         snprintf(label, cap, "%s", cfg_btn_name(b));
-        if (b < VJ_TAP_BTNS && c->tap[b][0] >= 0)
+        if (!VJ_IS_STICK(b) && c->tap[b][0] >= 0)
             snprintf(val, cap, "%s (%d, %d)", L("Touch", "Toque", "Toque"),
                      c->tap[b][0], c->tap[b][1]);
-        else if (b >= VJ_TAP_BTNS && c->joy[2] > 0)
+        else if (VJ_IS_STICK(b) && c->joy[2] > 0)
             snprintf(val, cap, "%s", L("Joystick", "Joystick", "Joystick"));
         else
             snprintf(val, cap, "%s", cfg_key_name(c->map[b]));
@@ -1232,6 +1250,15 @@ static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
         else snprintf(val, cap, "%s", L("None", "Ninguno", "Nenhum"));
         break;
     }
+    case ROW_PROFILE:
+        snprintf(label, cap, "%s", L("Shared profile", "Perfil compartible",
+                                     "Perfil compartilhável"));
+        snprintf(val, cap, "%s",
+                 profile_state == 2 ? L("Exported", "Exportado", "Exportado")
+                 : profile_state ? L("Saved (overwrite)", "Guardado (sobrescribir)",
+                                     "Salvo (sobrescrever)")
+                                 : L("Export", "Exportar", "Exportar"));
+        break;
     case ROW_ROTATE:
         snprintf(label, cap, "%s", L("Rotation", "Rotación", "Rotação"));
         snprintf(val, cap, "%d°", c->rotate * 90);
@@ -1265,11 +1292,11 @@ static void row_change(vj_cfg *c, int r, int d) {
         int b = r - ROW_MAP0;
         int *m = &c->map[b];
         /* cambiar la tecla quita el toque (o el joystick) de ese botón */
-        if (b < VJ_TAP_BTNS && c->tap[b][0] >= 0) {
+        if (!VJ_IS_STICK(b) && c->tap[b][0] >= 0) {
             c->tap[b][0] = c->tap[b][1] = -1;
             return;
         }
-        if (b >= VJ_TAP_BTNS && c->joy[2] > 0) {
+        if (VJ_IS_STICK(b) && c->joy[2] > 0) {
             memset(c->joy, 0, sizeof(c->joy));
             return;
         }
@@ -1410,6 +1437,9 @@ static void draw_settings(const scene *sc, const char *subtitle,
                                          "Restaurar")) + 28;
     else if (rows[sel] == ROW_TAPS)
         x0 += hint(x0, 522, 'x', NULL, L("Edit", "Editar", "Editar")) + 28;
+    else if (rows[sel] == ROW_PROFILE)
+        x0 += hint(x0, 522, 'x', NULL, L("Export", "Exportar",
+                                         "Exportar")) + 28;
     else
         x0 += hint(x0, 522, 0, "< >", L("Change", "Cambiar", "Mudar")) + 28;
     if (mode == SET_INGAME) {
@@ -1436,13 +1466,19 @@ static void draw_settings(const scene *sc, const char *subtitle,
 
 int vita_lcd_draw_game(void);  /* lcd.c */
 
-#define TAP_ITEMS (VJ_TAP_BTNS + 1)  /* 12 botones + joystick */
+/* Elementos del editor: los botones que pueden tocar (no las direcciones
+ * del stick) y, al final, el joystick (TAP_JOY). */
+#define TAP_JOY VJ_BTN_N
+static const int tap_items[] = {
+    4, 5, 6, 7, 0, 1, 2, 3, 8, 9, 10, 11, VJ_REAR0, VJ_REAR0 + 1, TAP_JOY,
+};
+#define TAP_ITEMS ((int)(sizeof(tap_items) / sizeof(tap_items[0])))
 
 static const char *tap_item_name(int i) {
-    return i < VJ_TAP_BTNS ? cfg_btn_name(i)
-                           : L("Left stick (joystick)",
-                               "Stick izquierdo (joystick)",
-                               "Analógico esquerdo (joystick)");
+    return i != TAP_JOY ? cfg_btn_name(i)
+                        : L("Left stick (joystick)",
+                            "Stick izquierdo (joystick)",
+                            "Analógico esquerdo (joystick)");
 }
 
 static void draw_tap_editor(const vj_cfg *c, int sel, float cx, float cy,
@@ -1467,13 +1503,13 @@ static void draw_tap_editor(const vj_cfg *c, int sel, float cx, float cy,
         float ex, ey, r;
         cfg_game_to_screen(c->joy[0] + c->joy[2], c->joy[1], &ex, &ey);
         r = sqrtf((ex - x) * (ex - x) + (ey - y) * (ey - y));
-        ring(x, y, r, 3, sel == VJ_TAP_BTNS ? C_GLOW
+        ring(x, y, r, 3, sel == TAP_JOY ? C_GLOW
                                             : RGBA8(0xFF, 0xFF, 0xFF, 0x90));
-        vita2d_draw_fill_circle(x, y, 7, sel == VJ_TAP_BTNS ? C_GLOW : C_WHITE);
+        vita2d_draw_fill_circle(x, y, 7, sel == TAP_JOY ? C_GLOW : C_WHITE);
     }
     /* toques */
-    for (i = 0; i < VJ_TAP_BTNS; i++) {
-        if (c->tap[i][0] < 0 ||
+    for (i = 0; i < VJ_BTN_N; i++) {
+        if (VJ_IS_STICK(i) || c->tap[i][0] < 0 ||
             !cfg_game_to_screen(c->tap[i][0], c->tap[i][1], &x, &y))
             continue;
         if (i == sel) vita2d_draw_fill_circle(x, y, 22, C_GLOW);
@@ -1515,7 +1551,7 @@ static void draw_tap_editor(const vj_cfg *c, int sel, float cx, float cy,
     x0 += hint(x0, 522, 0, L("Stick / touch", "Stick / dedo", "Analóg. / dedo"),
                L("Move", "Mover", "Mover")) + 20;
     x0 += hint(x0, 522, 'x', NULL, L("Place", "Colocar", "Posicionar")) + 20;
-    if (sel == VJ_TAP_BTNS)
+    if (sel == TAP_JOY)
         x0 += hint(x0, 522, 0, "^ v", L("Size", "Tamaño", "Tamanho")) + 20;
     x0 += hint(x0, 522, 's', NULL, L("Clear", "Quitar", "Remover")) + 20;
     x0 += hint(x0, 522, 't', NULL, L("Markers", "Marcadores",
@@ -1530,7 +1566,7 @@ static void tap_editor(scene *sc, vj_cfg *c) {
     SceCtrlData pad;
     SceTouchData t;
     unsigned int old = ~0u;
-    int sel = 4, finger = 0, gw = 0, gh = 0, has_frame;
+    int si = 0, sel = tap_items[0], finger = 0, gw = 0, gh = 0, has_frame;
     float cx = SCR_W / 2.0f, cy = SCR_H / 2.0f, x, y;
     extern int javacall_lcd_get_screen_width(void);
     extern int javacall_lcd_get_screen_height(void);
@@ -1551,9 +1587,10 @@ static void tap_editor(scene *sc, vj_cfg *c) {
         down = now & ~old;
         old = now;
 
-        if (down & SCE_CTRL_LEFT) sel = (sel + TAP_ITEMS - 1) % TAP_ITEMS;
-        if (down & SCE_CTRL_RIGHT) sel = (sel + 1) % TAP_ITEMS;
-        if (sel == VJ_TAP_BTNS && c->joy[2] > 0) {
+        if (down & SCE_CTRL_LEFT) si = (si + TAP_ITEMS - 1) % TAP_ITEMS;
+        if (down & SCE_CTRL_RIGHT) si = (si + 1) % TAP_ITEMS;
+        sel = tap_items[si];
+        if (sel == TAP_JOY && c->joy[2] > 0) {
             int step = (gw < gh ? gw : gh) / 40 + 1;
             if (down & SCE_CTRL_UP) c->joy[2] += step;
             if ((down & SCE_CTRL_DOWN) && c->joy[2] > step) c->joy[2] -= step;
@@ -1582,7 +1619,7 @@ static void tap_editor(scene *sc, vj_cfg *c) {
         if ((down & SCE_CTRL_CROSS) && has_frame) {
             int gx, gy;
             if (cfg_screen_to_game(cx, cy, &gx, &gy)) {
-                if (sel < VJ_TAP_BTNS) {
+                if (sel != TAP_JOY) {
                     c->tap[sel][0] = gx;
                     c->tap[sel][1] = gy;
                 } else {
@@ -1591,12 +1628,12 @@ static void tap_editor(scene *sc, vj_cfg *c) {
                     if (c->joy[2] <= 0) c->joy[2] = (gw < gh ? gw : gh) / 8 + 1;
                 }
                 c->touch = 1;  /* el juego tiene que ver puntero */
-                vj_log("toque: %s -> %d,%d", sel < VJ_TAP_BTNS ? "botón" :
+                vj_log("toque: %s -> %d,%d", sel != TAP_JOY ? "botón" :
                        "joystick", gx, gy);
             }
         }
         if (down & SCE_CTRL_SQUARE) {
-            if (sel < VJ_TAP_BTNS) c->tap[sel][0] = c->tap[sel][1] = -1;
+            if (sel != TAP_JOY) c->tap[sel][0] = c->tap[sel][1] = -1;
             else memset(c->joy, 0, sizeof(c->joy));
         }
         if (down & SCE_CTRL_TRIANGLE) c->tap_hud = !c->tap_hud;
@@ -1604,10 +1641,10 @@ static void tap_editor(scene *sc, vj_cfg *c) {
         /* al elegir otro botón con toque, el cursor salta a su punto */
         if (down & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT)) {
             int px = -1, py = -1;
-            if (sel < VJ_TAP_BTNS && c->tap[sel][0] >= 0) {
+            if (sel != TAP_JOY && c->tap[sel][0] >= 0) {
                 px = c->tap[sel][0];
                 py = c->tap[sel][1];
-            } else if (sel == VJ_TAP_BTNS && c->joy[2] > 0) {
+            } else if (sel == TAP_JOY && c->joy[2] > 0) {
                 px = c->joy[0];
                 py = c->joy[1];
             }
@@ -1634,6 +1671,7 @@ static int settings_run(scene *sc, const vj_game *g, int mode, vj_cfg *out) {
     const char *subtitle = g ? g->name : L("All games", "Todos los juegos",
                                            "Todos os jogos");
     nrows = settings_rows(mode, rows);
+    profile_state = g ? cfg_profile_exists(g) : 0;
     if (mode == SET_GLOBAL) cfg_global_get(&c);
     else cfg_load(g, &c);
     orig = c;
@@ -1660,7 +1698,11 @@ static int settings_run(scene *sc, const vj_game *g, int mode, vj_cfg *out) {
         if (down & SCE_CTRL_DOWN) sel = wrap(sel, 1, nrows);
         if (down & (SCE_CTRL_LEFT | SCE_CTRL_LTRIGGER)) row_change(&c, r, -1);
         if (down & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER | SCE_CTRL_CROSS)) {
-            if (r == ROW_TAPS) {
+            if (r == ROW_PROFILE) {
+                if ((down & SCE_CTRL_CROSS) && g &&
+                    cfg_profile_export(g, &c))
+                    profile_state = 2;
+            } else if (r == ROW_TAPS) {
                 if (down & SCE_CTRL_CROSS) {
                     tap_editor(sc, &c);
                     old = ~0u;  /* que el botón de salida no cuente aquí */
