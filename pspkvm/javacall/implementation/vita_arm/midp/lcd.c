@@ -462,6 +462,22 @@ javacall_result javacall_lcd_set_full_screen_mode(javacall_bool useFullScreen) {
 }
 
 
+/* Último frame subido (v1.1, editor de toques del menú): la textura sigue
+ * teniendo ese frame hasta el siguiente flush. */
+static int last_draw_w = 0, last_draw_h = 0;
+
+/* Dibuja el último frame del juego donde se vio (dentro de un
+ * vita2d_start_drawing del que llama). 0 si aún no hubo ninguno. */
+int vita_lcd_draw_game(void) {
+    if (!j2me_tex || last_draw_w < 1 || last_draw_h < 1) return 0;
+    vita2d_draw_texture_part_scale(j2me_tex,
+        vita_lcd_dest[0], vita_lcd_dest[1], 0.0f, 0.0f,
+        (float)last_draw_w, (float)last_draw_h,
+        vita_lcd_dest[2] / (float)last_draw_w,
+        vita_lcd_dest[3] / (float)last_draw_h);
+    return 1;
+}
+
 static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, int ystart, int yend){
     float dx, dy, dw, dh;
     int rot;
@@ -498,6 +514,7 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
     }
 
     vita_dest_rect(draw_w, draw_h, &dx, &dy, &dw, &dh);
+    last_draw_w = draw_w; last_draw_h = draw_h;
     vita_lcd_dest[0] = dx; vita_lcd_dest[1] = dy;
     vita_lcd_dest[2] = dw; vita_lcd_dest[3] = dh;
 

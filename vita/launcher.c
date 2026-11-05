@@ -239,6 +239,39 @@ static int hint(float x, float cy, int kind, const char *pill,
     return gw + 6 + text_w(0.85f, label);
 }
 
+/* Símbolo del botón i de la Vita (orden de btn_mask en gamecfg.c), para
+ * los marcadores de toques. Se llama dentro de un frame de vita2d. */
+void vj_button_glyph(int i, float cx, float cy, float s) {
+    static const char *const names[VJ_TAP_BTNS] = {
+        "", "", "", "", "", "", "", "", "L", "R", "SELECT", "START",
+    };
+    if (!font) font = vita2d_load_default_pgf();
+    switch (i) {
+    case 0: case 1: case 2: case 3: {  /* cruceta: flecha */
+        static const float dir[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+        float dx = dir[i][0], dy = dir[i][1];
+        thick_line(cx - dx * s, cy - dy * s, cx + dx * s, cy + dy * s, 3,
+                   C_WHITE);
+        thick_line(cx + dx * s, cy + dy * s, cx + dx * s * 0.1f - dy * s * 0.8f,
+                   cy + dy * s * 0.1f - dx * s * 0.8f, 3, C_WHITE);
+        thick_line(cx + dx * s, cy + dy * s, cx + dx * s * 0.1f + dy * s * 0.8f,
+                   cy + dy * s * 0.1f + dx * s * 0.8f, 3, C_WHITE);
+        break;
+    }
+    case 4: glyph_cross(cx, cy, s); break;
+    case 5: glyph_circle(cx, cy, s); break;
+    case 6: glyph_square(cx, cy, s * 0.85f); break;
+    case 7: glyph_triangle(cx, cy + 1, s); break;
+    default:
+        if (i >= 0 && i < VJ_TAP_BTNS && font) {
+            float sc = 0.62f;
+            int w = text_w(sc, names[i]);
+            text(cx - w / 2.0f, cy + 6, sc, C_WHITE, names[i]);
+        }
+        break;
+    }
+}
+
 /* ======================================================================
  * Datos: _suites.dat + JAR
  * ====================================================================== */
@@ -976,7 +1009,8 @@ static void draw_scene(const scene *sc) {
 enum {
     ROW_LANG, ROW_FPS,
     ROW_RES, ROW_SCALE, ROW_FILTER, ROW_ROTATE, ROW_MIRROR, ROW_PAD,
-    ROW_TOUCH, ROW_SPEED, ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N, ROW_N
+    ROW_TOUCH, ROW_TAPS, ROW_SPEED, ROW_MAP0, ROW_RESET = ROW_MAP0 + VJ_BTN_N,
+    ROW_N
 };
 enum { SET_GAME, SET_INGAME, SET_GLOBAL };
 
@@ -987,9 +1021,12 @@ static int settings_rows(int mode, int *rows) {
         if (mode == SET_GLOBAL) {
             /* resolución y orientación dependen de cada juego */
             if (r == ROW_RES || r == ROW_ROTATE || r == ROW_MIRROR) continue;
+            if (r == ROW_TAPS) continue;
         } else if (r == ROW_LANG || r == ROW_FPS) {
             continue;
         }
+        /* el editor de toques necesita la imagen del juego: solo en juego */
+        if (r == ROW_TAPS && mode != SET_INGAME) continue;
         rows[n++] = r;
     }
     return n;
@@ -1110,6 +1147,16 @@ static const char *row_help(int r, int mode) {
                  "táctiles). Requiere reiniciar el juego.",
                  "Tocar o jogo envia o ponteiro ao MIDlet (jogos de toque). "
                  "Requer reiniciar o jogo.");
+    case ROW_TAPS:
+        return L("For touch games with buttons drawn on the screen: each Vita "
+                 "button (and the left stick, as a joystick) can touch a "
+                 "point of the game. Press X to place them.",
+                 "Para juegos táctiles con botones dibujados en la pantalla: "
+                 "cada botón de la Vita (y el stick izquierdo, como joystick) "
+                 "puede tocar un punto del juego. Pulsa X para colocarlos.",
+                 "Para jogos de toque com botões desenhados na tela: cada "
+                 "botão do Vita (e o analógico esquerdo, como joystick) pode "
+                 "tocar um ponto do jogo. Aperte X para posicioná-los.");
     case ROW_RESET:
         return mode == SET_GLOBAL
             ? L("Back to the factory defaults (language is kept).",
@@ -1128,8 +1175,15 @@ static const char *row_help(int r, int mode) {
 static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
     int w, h;
     if (r >= ROW_MAP0 && r < ROW_RESET) {
-        snprintf(label, cap, "%s", cfg_btn_name(r - ROW_MAP0));
-        snprintf(val, cap, "%s", cfg_key_name(c->map[r - ROW_MAP0]));
+        int b = r - ROW_MAP0;
+        snprintf(label, cap, "%s", cfg_btn_name(b));
+        if (b < VJ_TAP_BTNS && c->tap[b][0] >= 0)
+            snprintf(val, cap, "%s (%d, %d)", L("Touch", "Toque", "Toque"),
+                     c->tap[b][0], c->tap[b][1]);
+        else if (b >= VJ_TAP_BTNS && c->joy[2] > 0)
+            snprintf(val, cap, "%s", L("Joystick", "Joystick", "Joystick"));
+        else
+            snprintf(val, cap, "%s", cfg_key_name(c->map[b]));
         return;
     }
     val[0] = 0;
@@ -1169,6 +1223,15 @@ static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
                                      "Tela de toque"));
         snprintf(val, cap, "%s", on_off(c->touch));
         break;
+    case ROW_TAPS: {
+        int n = cfg_tap_count(c);
+        snprintf(label, cap, "%s", L("Touch buttons", "Botones táctiles",
+                                     "Botões de toque"));
+        if (n) snprintf(val, cap, "%d %s", n, L("assigned", "asignados",
+                                                "atribuídos"));
+        else snprintf(val, cap, "%s", L("None", "Ninguno", "Nenhum"));
+        break;
+    }
     case ROW_ROTATE:
         snprintf(label, cap, "%s", L("Rotation", "Rotación", "Rotação"));
         snprintf(val, cap, "%d°", c->rotate * 90);
@@ -1199,7 +1262,17 @@ static int wrap(int v, int d, int n) {
 static void row_change(vj_cfg *c, int r, int d) {
     int i;
     if (r >= ROW_MAP0 && r < ROW_RESET) {
-        int *m = &c->map[r - ROW_MAP0];
+        int b = r - ROW_MAP0;
+        int *m = &c->map[b];
+        /* cambiar la tecla quita el toque (o el joystick) de ese botón */
+        if (b < VJ_TAP_BTNS && c->tap[b][0] >= 0) {
+            c->tap[b][0] = c->tap[b][1] = -1;
+            return;
+        }
+        if (b >= VJ_TAP_BTNS && c->joy[2] > 0) {
+            memset(c->joy, 0, sizeof(c->joy));
+            return;
+        }
         for (i = 0; i < vj_keys_n; i++)
             if (vj_key_codes[i] == *m) break;
         *m = vj_key_codes[wrap(i < vj_keys_n ? i : 0, d, vj_keys_n)];
@@ -1335,6 +1408,8 @@ static void draw_settings(const scene *sc, const char *subtitle,
     if (rows[sel] == ROW_RESET)
         x0 += hint(x0, 522, 'x', NULL, L("Restore", "Restaurar",
                                          "Restaurar")) + 28;
+    else if (rows[sel] == ROW_TAPS)
+        x0 += hint(x0, 522, 'x', NULL, L("Edit", "Editar", "Editar")) + 28;
     else
         x0 += hint(x0, 522, 0, "< >", L("Change", "Cambiar", "Mudar")) + 28;
     if (mode == SET_INGAME) {
@@ -1350,6 +1425,201 @@ static void draw_settings(const scene *sc, const char *subtitle,
     vita2d_end_drawing();
     vita2d_swap_buffers();
     vita_gpu_unlock();
+}
+
+/* ======================================================================
+ * Editor de botones táctiles (Fase A, v1.1): en el menú del juego, sobre
+ * la última imagen del juego. Cada botón de la Vita puede tocar un punto
+ * del juego; el stick izquierdo puede ser el dedo sobre un joystick que
+ * dibuja el juego (centro + radio). Coordenadas en píxeles del juego.
+ * ====================================================================== */
+
+int vita_lcd_draw_game(void);  /* lcd.c */
+
+#define TAP_ITEMS (VJ_TAP_BTNS + 1)  /* 12 botones + joystick */
+
+static const char *tap_item_name(int i) {
+    return i < VJ_TAP_BTNS ? cfg_btn_name(i)
+                           : L("Left stick (joystick)",
+                               "Stick izquierdo (joystick)",
+                               "Analógico esquerdo (joystick)");
+}
+
+static void draw_tap_editor(const vj_cfg *c, int sel, float cx, float cy,
+                            int has_frame, int gw, int gh) {
+    char buf[96];
+    float x, y, x0;
+    int i;
+    vita_gpu_lock();
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    if (has_frame) vita_lcd_draw_game();
+    else text(48, 280, 0.9f, C_TEXT_2,
+              L("No game image yet: go back to the game and open the menu "
+                "again.",
+                "Aún no hay imagen del juego: vuelve al juego y abre el menú "
+                "otra vez.",
+                "Ainda não há imagem do jogo: volte ao jogo e abra o menu "
+                "de novo."));
+
+    /* joystick */
+    if (c->joy[2] > 0 && cfg_game_to_screen(c->joy[0], c->joy[1], &x, &y)) {
+        float ex, ey, r;
+        cfg_game_to_screen(c->joy[0] + c->joy[2], c->joy[1], &ex, &ey);
+        r = sqrtf((ex - x) * (ex - x) + (ey - y) * (ey - y));
+        ring(x, y, r, 3, sel == VJ_TAP_BTNS ? C_GLOW
+                                            : RGBA8(0xFF, 0xFF, 0xFF, 0x90));
+        vita2d_draw_fill_circle(x, y, 7, sel == VJ_TAP_BTNS ? C_GLOW : C_WHITE);
+    }
+    /* toques */
+    for (i = 0; i < VJ_TAP_BTNS; i++) {
+        if (c->tap[i][0] < 0 ||
+            !cfg_game_to_screen(c->tap[i][0], c->tap[i][1], &x, &y))
+            continue;
+        if (i == sel) vita2d_draw_fill_circle(x, y, 22, C_GLOW);
+        vita2d_draw_fill_circle(x, y, 18, RGBA8(0x00, 0x05, 0x18, 0xD0));
+        vj_button_glyph(i, x, y, 8);
+    }
+    /* cursor */
+    thick_line(cx - 16, cy, cx - 5, cy, 3, C_WHITE);
+    thick_line(cx + 5, cy, cx + 16, cy, 3, C_WHITE);
+    thick_line(cx, cy - 16, cx, cy - 5, 3, C_WHITE);
+    thick_line(cx, cy + 5, cx, cy + 16, 3, C_WHITE);
+
+    /* barra superior: qué se está colocando */
+    vita2d_draw_rectangle(0, 0, SCR_W, 70, C_BAR);
+    text(24, 30, 0.95f, C_WHITE, L("Touch buttons", "Botones táctiles",
+                                   "Botões de toque"));
+    glyph_pill(24, 52, "<");
+    text_fit(52, 58, 0.9f, C_GLOW, tap_item_name(sel), 380);
+    glyph_pill(52 + (text_w(0.9f, tap_item_name(sel)) > 380
+                         ? 380 : text_w(0.9f, tap_item_name(sel))) + 8, 52, ">");
+    {
+        int gx, gy;
+        if (cfg_screen_to_game(cx, cy, &gx, &gy))
+            snprintf(buf, sizeof(buf), "%d, %d  (%dx%d)", gx, gy, gw, gh);
+        else
+            buf[0] = 0;
+        text(SCR_W - 24 - text_w(0.8f, buf), 30, 0.8f, C_TEXT_2, buf);
+        snprintf(buf, sizeof(buf), "%s: %s",
+                 L("Markers in game", "Marcadores en juego",
+                   "Marcadores no jogo"), c->tap_hud ? L("On", "Sí", "Sim")
+                                                     : L("Off", "No", "Não"));
+        text(SCR_W - 24 - text_w(0.8f, buf), 58, 0.8f, C_TEXT_2, buf);
+    }
+
+    /* barra inferior */
+    vita2d_draw_rectangle(0, 498, SCR_W, 46, C_BAR);
+    x0 = 24;
+    x0 += hint(x0, 522, 0, "< >", L("Button", "Botón", "Botão")) + 20;
+    x0 += hint(x0, 522, 0, L("Stick / touch", "Stick / dedo", "Analóg. / dedo"),
+               L("Move", "Mover", "Mover")) + 20;
+    x0 += hint(x0, 522, 'x', NULL, L("Place", "Colocar", "Posicionar")) + 20;
+    if (sel == VJ_TAP_BTNS)
+        x0 += hint(x0, 522, 0, "^ v", L("Size", "Tamaño", "Tamanho")) + 20;
+    x0 += hint(x0, 522, 's', NULL, L("Clear", "Quitar", "Remover")) + 20;
+    x0 += hint(x0, 522, 't', NULL, L("Markers", "Marcadores",
+                                     "Marcadores")) + 20;
+    hint(x0, 522, 'o', NULL, L("Done", "Listo", "Pronto"));
+    vita2d_end_drawing();
+    vita2d_swap_buffers();
+    vita_gpu_unlock();
+}
+
+static void tap_editor(scene *sc, vj_cfg *c) {
+    SceCtrlData pad;
+    SceTouchData t;
+    unsigned int old = ~0u;
+    int sel = 4, finger = 0, gw = 0, gh = 0, has_frame;
+    float cx = SCR_W / 2.0f, cy = SCR_H / 2.0f, x, y;
+    extern int javacall_lcd_get_screen_width(void);
+    extern int javacall_lcd_get_screen_height(void);
+    gw = javacall_lcd_get_screen_width();
+    gh = javacall_lcd_get_screen_height();
+    /* ¿hay imagen? (sin dibujar: solo para el mensaje) */
+    has_frame = cfg_game_to_screen(0, 0, &x, &y);
+    if (has_frame && cfg_game_to_screen(gw / 2, gh / 2, &x, &y)) {
+        cx = x;
+        cy = y;
+    }
+    vj_log("editor de toques abierto (%dx%d, %d asignados)", gw, gh,
+           cfg_tap_count(c));
+    for (;;) {
+        unsigned int now, down;
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+        now = pad.buttons;
+        down = now & ~old;
+        old = now;
+
+        if (down & SCE_CTRL_LEFT) sel = (sel + TAP_ITEMS - 1) % TAP_ITEMS;
+        if (down & SCE_CTRL_RIGHT) sel = (sel + 1) % TAP_ITEMS;
+        if (sel == VJ_TAP_BTNS && c->joy[2] > 0) {
+            int step = (gw < gh ? gw : gh) / 40 + 1;
+            if (down & SCE_CTRL_UP) c->joy[2] += step;
+            if ((down & SCE_CTRL_DOWN) && c->joy[2] > step) c->joy[2] -= step;
+        }
+        /* stick: cursor (con aceleración suave) */
+        {
+            float dx = (pad.lx - 128) / 128.0f, dy = (pad.ly - 128) / 128.0f;
+            if (fabsf(dx) > 0.2f) cx += dx * fabsf(dx) * 9;
+            if (fabsf(dy) > 0.2f) cy += dy * fabsf(dy) * 9;
+        }
+        /* dedo: el cursor lo sigue y al soltar se coloca */
+        memset(&t, 0, sizeof(t));
+        if (sceTouchPeek(SCE_TOUCH_PORT_FRONT, &t, 1) >= 0 && t.reportNum > 0) {
+            cx = t.report[0].x / 2.0f;
+            cy = t.report[0].y / 2.0f;
+            finger = 1;
+        } else if (finger) {
+            finger = 0;
+            down |= SCE_CTRL_CROSS;  /* soltar el dedo = colocar */
+        }
+        if (cx < 0) cx = 0;
+        if (cx > SCR_W - 1) cx = SCR_W - 1;
+        if (cy < 0) cy = 0;
+        if (cy > SCR_H - 1) cy = SCR_H - 1;
+
+        if ((down & SCE_CTRL_CROSS) && has_frame) {
+            int gx, gy;
+            if (cfg_screen_to_game(cx, cy, &gx, &gy)) {
+                if (sel < VJ_TAP_BTNS) {
+                    c->tap[sel][0] = gx;
+                    c->tap[sel][1] = gy;
+                } else {
+                    c->joy[0] = gx;
+                    c->joy[1] = gy;
+                    if (c->joy[2] <= 0) c->joy[2] = (gw < gh ? gw : gh) / 8 + 1;
+                }
+                c->touch = 1;  /* el juego tiene que ver puntero */
+                vj_log("toque: %s -> %d,%d", sel < VJ_TAP_BTNS ? "botón" :
+                       "joystick", gx, gy);
+            }
+        }
+        if (down & SCE_CTRL_SQUARE) {
+            if (sel < VJ_TAP_BTNS) c->tap[sel][0] = c->tap[sel][1] = -1;
+            else memset(c->joy, 0, sizeof(c->joy));
+        }
+        if (down & SCE_CTRL_TRIANGLE) c->tap_hud = !c->tap_hud;
+        if (down & SCE_CTRL_CIRCLE) break;
+        /* al elegir otro botón con toque, el cursor salta a su punto */
+        if (down & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT)) {
+            int px = -1, py = -1;
+            if (sel < VJ_TAP_BTNS && c->tap[sel][0] >= 0) {
+                px = c->tap[sel][0];
+                py = c->tap[sel][1];
+            } else if (sel == VJ_TAP_BTNS && c->joy[2] > 0) {
+                px = c->joy[0];
+                py = c->joy[1];
+            }
+            if (px >= 0 && cfg_game_to_screen(px, py, &x, &y)) {
+                cx = x;
+                cy = y;
+            }
+        }
+        sc->frame++;
+        draw_tap_editor(c, sel, cx, cy, has_frame, gw, gh);
+    }
+    vj_log("editor de toques cerrado (%d asignados)", cfg_tap_count(c));
 }
 
 /* g = NULL -> opciones globales. Devuelve 1 si se guardaron cambios; en
@@ -1390,7 +1660,12 @@ static int settings_run(scene *sc, const vj_game *g, int mode, vj_cfg *out) {
         if (down & SCE_CTRL_DOWN) sel = wrap(sel, 1, nrows);
         if (down & (SCE_CTRL_LEFT | SCE_CTRL_LTRIGGER)) row_change(&c, r, -1);
         if (down & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER | SCE_CTRL_CROSS)) {
-            if (r == ROW_RESET) {
+            if (r == ROW_TAPS) {
+                if (down & SCE_CTRL_CROSS) {
+                    tap_editor(sc, &c);
+                    old = ~0u;  /* que el botón de salida no cuente aquí */
+                }
+            } else if (r == ROW_RESET) {
                 if (down & SCE_CTRL_CROSS) {
                     int aw = c.auto_w, ah = c.auto_h;
                     if (mode == SET_GLOBAL) {

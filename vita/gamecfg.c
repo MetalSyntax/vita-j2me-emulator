@@ -19,6 +19,7 @@
 #include <psp2/kernel/processmgr.h>
 #include <vita2d.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -136,6 +137,15 @@ void cfg_factory(vj_cfg *c) {
     c->keypad = VJ_PAD_AUTO;
     c->touch = 1;
     memcpy(c->map, btn_default, sizeof(c->map));
+    memset(c->tap, 0xFF, sizeof(c->tap));  /* -1: sin toque */
+    c->tap_hud = 1;
+}
+
+int cfg_tap_count(const vj_cfg *c) {
+    int i, n = 0;
+    for (i = 0; i < VJ_TAP_BTNS; i++)
+        if (c->tap[i][0] >= 0) n++;
+    return n + (c->joy[2] > 0);
 }
 
 /* Opciones globales: idioma, contador de FPS y los valores por defecto
@@ -151,6 +161,9 @@ void cfg_global_load(void) {
     cfg_factory(&global_def);
     cfg_parse(GLOBAL_CFG, &global_def);
     global_def.res = global_def.rotate = global_def.mirror = 0;
+    /* los toques dependen de los botones que dibuja cada juego */
+    memset(global_def.tap, 0xFF, sizeof(global_def.tap));
+    memset(global_def.joy, 0, sizeof(global_def.joy));
     global_loaded = 1;
 }
 
@@ -233,6 +246,23 @@ static void cfg_parse(const char *path, vj_cfg *c) {
         } else if (!strcmp(line, "speed")) {
             c->speed = atoi(v);
             if (c->speed < 0 || c->speed > 2) c->speed = 0;
+        } else if (!strcmp(line, "tap")) {
+            /* tap=x,y;x,y;...  (VJ_BTN_N pares, -1,-1 = sin toque) */
+            char *p = v;
+            for (i = 0; i < VJ_BTN_N && *p && *p != '\n'; i++) {
+                c->tap[i][0] = (int)strtol(p, &p, 10);
+                if (*p == ',') p++;
+                c->tap[i][1] = (int)strtol(p, &p, 10);
+                if (*p == ';') p++;
+                if (c->tap[i][0] < 0 || c->tap[i][1] < 0 || i >= VJ_TAP_BTNS)
+                    c->tap[i][0] = c->tap[i][1] = -1;
+            }
+        } else if (!strcmp(line, "joy")) {
+            if (sscanf(v, "%d,%d,%d", &c->joy[0], &c->joy[1], &c->joy[2]) != 3
+                || c->joy[0] < 0 || c->joy[1] < 0)
+                memset(c->joy, 0, sizeof(c->joy));
+        } else if (!strcmp(line, "taphud")) {
+            c->tap_hud = atoi(v) ? 1 : 0;
         } else if (!strcmp(line, "map")) {
             char *p = v;
             for (i = 0; i < VJ_BTN_N && *p; i++) {
@@ -269,7 +299,11 @@ static void cfg_write(FILE *f, const vj_cfg *c) {
             c->touch, c->rotate, c->mirror, c->speed);
     for (i = 0; i < VJ_BTN_N; i++)
         fprintf(f, i ? ",%d" : "%d", c->map[i]);
-    fprintf(f, "\n");
+    fprintf(f, "\ntap=");
+    for (i = 0; i < VJ_BTN_N; i++)
+        fprintf(f, i ? ";%d,%d" : "%d,%d", c->tap[i][0], c->tap[i][1]);
+    fprintf(f, "\njoy=%d,%d,%d\ntaphud=%d\n", c->joy[0], c->joy[1],
+            c->joy[2], c->tap_hud);
 }
 
 void cfg_screen(const vj_cfg *c, int *w, int *h) {
@@ -451,6 +485,7 @@ static int game_key(int code, int rot, int mirror) {
 static vj_layout cur;
 static vj_cfg cur_cfg;  /* lo último aplicado (para L+R+△) */
 static int cur_touch;
+static int cur_taps;    /* nº de botones con toque (cfg_apply) */
 static volatile unsigned char key_down[VJ_PAD_MAX];
 static vita2d_pgf *pad_font;
 static SceUID touch_tid = -1;
@@ -496,10 +531,13 @@ static void draw_fps(void) {
                          0.9f, buf);
 }
 
+static void tap_hud(void);
+
 /* Hilo de la VM, dentro del frame de lcd.c. */
 static void pad_overlay(void) {
     int i;
     if (vj_show_fps && pad_font) draw_fps();
+    if (cur_cfg.tap_hud && (cur_taps || cur_cfg.joy[2] > 0)) tap_hud();
     for (i = 0; i < 2; i++)
         if (cur.panel[i][2] > 0)
             vita2d_draw_rectangle(cur.panel[i][0], cur.panel[i][1],
@@ -523,20 +561,191 @@ static void pad_overlay(void) {
     }
 }
 
+/* Marcadores de los toques (opción por juego) encima del juego. */
+static void tap_hud(void) {
+    int i;
+    float x, y;
+    if (cur_cfg.joy[2] > 0 &&
+        cfg_game_to_screen(cur_cfg.joy[0], cur_cfg.joy[1], &x, &y)) {
+        float ex, ey, r;
+        cfg_game_to_screen(cur_cfg.joy[0] + cur_cfg.joy[2], cur_cfg.joy[1],
+                           &ex, &ey);
+        r = sqrtf((ex - x) * (ex - x) + (ey - y) * (ey - y));
+        for (i = 0; i < 48; i++) {
+            float a = i * 6.2831853f / 48;
+            vita2d_draw_fill_circle(x + cosf(a) * r, y + sinf(a) * r, 1.5f,
+                                    RGBA8(0xFF, 0xFF, 0xFF, 0x50));
+        }
+        vita2d_draw_fill_circle(x, y, 6, RGBA8(0xFF, 0xFF, 0xFF, 0x50));
+    }
+    for (i = 0; i < VJ_TAP_BTNS; i++) {
+        if (cur_cfg.tap[i][0] < 0 ||
+            !cfg_game_to_screen(cur_cfg.tap[i][0], cur_cfg.tap[i][1], &x, &y))
+            continue;
+        vita2d_draw_fill_circle(x, y, 15, RGBA8(0x00, 0x00, 0x00, 0x60));
+        vj_button_glyph(i, x, y, 7);
+    }
+}
+
 static int inside(float x, float y, const float *r) {
     return x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3];
 }
 
+/* ---- coordenadas juego <-> pantalla (mismas cuentas que lcd.c) ------- */
+
+int cfg_screen_to_game(float sx, float sy, int *gx, int *gy) {
+    float d[4];
+    int gw = javacall_lcd_get_screen_width();
+    int gh = javacall_lcd_get_screen_height();
+    int rot = cur_cfg.rotate, dw, dh, u, v, x, y;
+    set4(d, vita_lcd_dest[0], vita_lcd_dest[1], vita_lcd_dest[2],
+         vita_lcd_dest[3]);
+    if (d[2] < 1 || d[3] < 1 || gw < 1 || gh < 1) return 0;
+    /* punto en la imagen mostrada (u,v) -> píxel del juego, deshaciendo
+     * espejo y rotación (inversa de lcd.c) */
+    dw = (rot & 1) ? gh : gw;
+    dh = (rot & 1) ? gw : gh;
+    u = (int)((sx - d[0]) * dw / d[2]);
+    v = (int)((sy - d[1]) * dh / d[3]);
+    if (cur_cfg.mirror & 1) u = dw - 1 - u;
+    if (cur_cfg.mirror & 2) v = dh - 1 - v;
+    switch (rot) {
+    case 1: x = v; y = gh - 1 - u; break;
+    case 2: x = gw - 1 - u; y = gh - 1 - v; break;
+    case 3: x = gw - 1 - v; y = u; break;
+    default: x = u; y = v; break;
+    }
+    if (x < 0) x = 0;
+    if (x >= gw) x = gw - 1;
+    if (y < 0) y = 0;
+    if (y >= gh) y = gh - 1;
+    *gx = x;
+    *gy = y;
+    return 1;
+}
+
+int cfg_game_to_screen(int gx, int gy, float *sx, float *sy) {
+    float d[4];
+    int gw = javacall_lcd_get_screen_width();
+    int gh = javacall_lcd_get_screen_height();
+    int rot = cur_cfg.rotate, dw, dh, u, v;
+    set4(d, vita_lcd_dest[0], vita_lcd_dest[1], vita_lcd_dest[2],
+         vita_lcd_dest[3]);
+    if (d[2] < 1 || d[3] < 1 || gw < 1 || gh < 1) return 0;
+    dw = (rot & 1) ? gh : gw;
+    dh = (rot & 1) ? gw : gh;
+    switch (rot) {
+    case 1: u = gh - 1 - gy; v = gx; break;
+    case 2: u = gw - 1 - gx; v = gh - 1 - gy; break;
+    case 3: u = gy; v = gw - 1 - gx; break;
+    default: u = gx; v = gy; break;
+    }
+    if (cur_cfg.mirror & 1) u = dw - 1 - u;
+    if (cur_cfg.mirror & 2) v = dh - 1 - v;
+    *sx = d[0] + (u + 0.5f) * d[2] / dw;
+    *sy = d[1] + (v + 0.5f) * d[3] / dh;
+    return 1;
+}
+
+/* ---- puntero único del MIDlet --------------------------------------------
+ * MIDP solo conoce UN punto de toque. Fuentes: el dedo (si el táctil está
+ * activo), cada botón con toque asignado y el stick como joystick. Manda
+ * la última que se activó; al soltarla vuelve a la que siga activa (por
+ * ejemplo: stick moviendo al personaje + ✕ para atacar, al soltar ✕ el
+ * dedo virtual vuelve al joystick). */
+enum { SRC_FINGER = 0, SRC_BTN0 = 1, SRC_JOY = SRC_BTN0 + VJ_TAP_BTNS,
+       SRC_N };
+
+static struct {
+    int on[SRC_N], x[SRC_N], y[SRC_N];
+    unsigned int stamp[SRC_N], clock;
+    int owner, px, py;  /* fuente que tiene el puntero (-1: suelto) */
+} ptr = { .owner = -1 };
+
+static void ptr_release_all(void) {
+    if (ptr.owner >= 0)
+        javanotify_pen_event(ptr.px, ptr.py, JAVACALL_PENRELEASED);
+    memset(&ptr, 0, sizeof(ptr));
+    ptr.owner = -1;
+}
+
+/* Tras rellenar on/x/y de este ciclo: elige la fuente y manda eventos. */
+static void ptr_update(void) {
+    int i, best = -1;
+    for (i = 0; i < SRC_N; i++) {
+        if (ptr.on[i] && !ptr.stamp[i]) ptr.stamp[i] = ++ptr.clock;
+        if (!ptr.on[i]) ptr.stamp[i] = 0;
+        if (ptr.on[i] && (best < 0 || ptr.stamp[i] > ptr.stamp[best]))
+            best = i;
+    }
+    if (best != ptr.owner) {
+        if (ptr.owner >= 0)
+            javanotify_pen_event(ptr.px, ptr.py, JAVACALL_PENRELEASED);
+        ptr.owner = best;
+        if (best < 0) return;
+        if (best == SRC_JOY) {
+            /* el dedo "apoya" en el centro del joystick y luego se mueve */
+            ptr.px = cur_cfg.joy[0];
+            ptr.py = cur_cfg.joy[1];
+            javanotify_pen_event(ptr.px, ptr.py, JAVACALL_PENPRESSED);
+        } else {
+            ptr.px = ptr.x[best];
+            ptr.py = ptr.y[best];
+            javanotify_pen_event(ptr.px, ptr.py, JAVACALL_PENPRESSED);
+            return;
+        }
+    }
+    if (best >= 0 && (ptr.x[best] != ptr.px || ptr.y[best] != ptr.py)) {
+        ptr.px = ptr.x[best];
+        ptr.py = ptr.y[best];
+        javanotify_pen_event(ptr.px, ptr.py, JAVACALL_PENDRAGGED);
+    }
+}
+
+/* Stick -> punto del joystick, girando la dirección vista en la Vita a la
+ * del juego (como game_key). Devuelve 0 en la zona muerta. */
+static int joy_point(int lx, int ly, int *x, int *y) {
+    float du = (lx - 128) / 127.0f, dv = (ly - 128) / 127.0f, gx, gy;
+    float len = sqrtf(du * du + dv * dv), dead = 0.25f, m;
+    int gw = javacall_lcd_get_screen_width();
+    int gh = javacall_lcd_get_screen_height();
+    if (len < dead) return 0;
+    /* fuera de la zona muerta: 0..1 del radio, en la misma dirección */
+    m = ((len > 1.0f ? 1.0f : len) - dead) / (1.0f - dead);
+    du = du / len * m;
+    dv = dv / len * m;
+    if (cur_cfg.mirror & 1) du = -du;
+    if (cur_cfg.mirror & 2) dv = -dv;
+    switch (cur_cfg.rotate) {
+    case 1: gx = dv; gy = -du; break;
+    case 2: gx = -du; gy = -dv; break;
+    case 3: gx = -dv; gy = du; break;
+    default: gx = du; gy = dv; break;
+    }
+    *x = cur_cfg.joy[0] + (int)(gx * cur_cfg.joy[2]);
+    *y = cur_cfg.joy[1] + (int)(gy * cur_cfg.joy[2]);
+    if (*x < 0) *x = 0;
+    if (*x >= gw) *x = gw - 1;
+    if (*y < 0) *y = 0;
+    if (*y >= gh) *y = gh - 1;
+    return 1;
+}
+
 static int touch_thread(SceSize args, void *argp) {
     SceTouchData t;
-    int pen_id = -1, pen_x = 0, pen_y = 0, i, k;
+    SceCtrlData pad;
+    int pen_id = -1, i, k;
     (void)args; (void)argp;
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT,
                              SCE_TOUCH_SAMPLING_STATE_START);
     for (;;) {
         sceKernelDelayThread(16 * 1000);
-        /* Biblioteca o pantalla de carga todavía delante: nada al MIDlet. */
-        if (vita_lcd_loading_hook || suspend_key_input) continue;
+        /* Biblioteca, pantalla de carga o menú delante: nada al MIDlet. */
+        if (vita_lcd_loading_hook || suspend_key_input) {
+            if (ptr.owner >= 0 || ptr.clock) ptr_release_all();
+            pen_id = -1;
+            continue;
+        }
         if (vita_pad_toggle_request) {
             vita_pad_toggle_request = 0;
             for (k = 0; k < cur.nkeys; k++) {  /* soltar lo pulsado */
@@ -552,7 +761,7 @@ static int touch_thread(SceSize args, void *argp) {
             continue;
         }
         memset(&t, 0, sizeof(t));
-        if (sceTouchPeek(SCE_TOUCH_PORT_FRONT, &t, 1) < 0) continue;
+        if (sceTouchPeek(SCE_TOUCH_PORT_FRONT, &t, 1) < 0) t.reportNum = 0;
 
         for (k = 0; k < cur.nkeys; k++) {
             float r[4];
@@ -569,14 +778,13 @@ static int touch_thread(SceSize args, void *argp) {
             }
         }
 
-        if (!cur_touch) continue;
-        {
+        /* dedo real */
+        ptr.on[SRC_FINGER] = 0;
+        if (cur_touch) {
             float d[4];
-            int found = -1, gw = javacall_lcd_get_screen_width();
-            int gh = javacall_lcd_get_screen_height();
+            int found = -1;
             set4(d, vita_lcd_dest[0], vita_lcd_dest[1], vita_lcd_dest[2],
                  vita_lcd_dest[3]);
-            if (d[2] < 1 || d[3] < 1) continue;
             for (i = 0; i < t.reportNum; i++) {
                 float x = t.report[i].x / 2.0f, y = t.report[i].y / 2.0f;
                 if (pen_id >= 0 ? t.report[i].id == pen_id : inside(x, y, d)) {
@@ -584,38 +792,35 @@ static int touch_thread(SceSize args, void *argp) {
                     break;
                 }
             }
-            if (found >= 0) {
-                /* punto en la imagen mostrada (u,v) -> píxel del juego,
-                 * deshaciendo espejo y rotación (inversa de lcd.c) */
-                int rot = cur_cfg.rotate;
-                int dw = (rot & 1) ? gh : gw, dh = (rot & 1) ? gw : gh, x, y;
-                int u = (int)((t.report[found].x / 2.0f - d[0]) * dw / d[2]);
-                int v = (int)((t.report[found].y / 2.0f - d[1]) * dh / d[3]);
-                if (cur_cfg.mirror & 1) u = dw - 1 - u;
-                if (cur_cfg.mirror & 2) v = dh - 1 - v;
-                switch (rot) {
-                case 1: x = v; y = gh - 1 - u; break;
-                case 2: x = gw - 1 - u; y = gh - 1 - v; break;
-                case 3: x = gw - 1 - v; y = u; break;
-                default: x = u; y = v; break;
-                }
-                if (x < 0) x = 0;
-                if (x >= gw) x = gw - 1;
-                if (y < 0) y = 0;
-                if (y >= gh) y = gh - 1;
-                if (pen_id < 0) {
-                    pen_id = t.report[found].id;
-                    javanotify_pen_event(x, y, JAVACALL_PENPRESSED);
-                } else if (x != pen_x || y != pen_y) {
-                    javanotify_pen_event(x, y, JAVACALL_PENDRAGGED);
-                }
-                pen_x = x;
-                pen_y = y;
-            } else if (pen_id >= 0) {
-                javanotify_pen_event(pen_x, pen_y, JAVACALL_PENRELEASED);
+            if (found >= 0 &&
+                cfg_screen_to_game(t.report[found].x / 2.0f,
+                                   t.report[found].y / 2.0f,
+                                   &ptr.x[SRC_FINGER], &ptr.y[SRC_FINGER])) {
+                pen_id = t.report[found].id;
+                ptr.on[SRC_FINGER] = 1;
+            } else {
                 pen_id = -1;
             }
         }
+
+        /* botones con toque y stick-joystick */
+        if (cur_taps || cur_cfg.joy[2] > 0) {
+            unsigned int b;
+            sceCtrlPeekBufferPositive(0, &pad, 1);
+            b = pad.buttons;
+            /* L+R+algo son atajos del emulador: no tocan el juego */
+            if ((b & SCE_CTRL_LTRIGGER) && (b & SCE_CTRL_RTRIGGER)) b = 0;
+            for (i = 0; i < VJ_TAP_BTNS; i++) {
+                ptr.on[SRC_BTN0 + i] = cur_cfg.tap[i][0] >= 0 &&
+                                       (b & btn_mask[i]) != 0;
+                ptr.x[SRC_BTN0 + i] = cur_cfg.tap[i][0];
+                ptr.y[SRC_BTN0 + i] = cur_cfg.tap[i][1];
+            }
+            ptr.on[SRC_JOY] = cur_cfg.joy[2] > 0 &&
+                              joy_point(pad.lx, pad.ly, &ptr.x[SRC_JOY],
+                                        &ptr.y[SRC_JOY]);
+        }
+        ptr_update();
     }
     return 0;
 }
@@ -649,8 +854,14 @@ void cfg_apply(const vj_cfg *c, int live) {
     vita_lcd_filter = c->filter;
     cur_touch = c->touch;
 
+    cur_taps = 0;
+    for (i = 0; i < VJ_TAP_BTNS; i++)
+        if (c->tap[i][0] >= 0) cur_taps++;
     for (i = 0; i < VJ_BTN_N; i++) {
         if (!c->map[i]) continue;
+        /* con toque asignado el botón toca la pantalla, no manda tecla;
+         * con el joystick activo, las direcciones del stick tampoco */
+        if (i < VJ_TAP_BTNS ? c->tap[i][0] >= 0 : c->joy[2] > 0) continue;
         vita_keymap_custom[n].nativeKey = btn_mask[i];
         vita_keymap_custom[n].javaKey =
             (javacall_key)game_key(c->map[i], c->rotate, c->mirror);
@@ -667,9 +878,13 @@ void cfg_apply(const vj_cfg *c, int live) {
     }
     vita_keymap_custom_n = n;
 
-    if ((cur.nkeys || vj_show_fps) && !pad_font)
-        pad_font = vita2d_load_default_pgf();
-    vita_lcd_overlay_hook = (cur.nkeys || vj_show_fps) ? pad_overlay : 0;
+    {
+        int hud = c->tap_hud && (cur_taps || c->joy[2] > 0);
+        if ((cur.nkeys || vj_show_fps || hud) && !pad_font)
+            pad_font = vita2d_load_default_pgf();
+        vita_lcd_overlay_hook = (cur.nkeys || vj_show_fps || hud)
+                                    ? pad_overlay : 0;
+    }
     /* siempre: también atiende L+R+△ (mostrar/ocultar teclado) */
     if (touch_tid < 0) {
         touch_tid = sceKernelCreateThread("vj_touch", touch_thread, 0x10000100,
@@ -677,7 +892,8 @@ void cfg_apply(const vj_cfg *c, int live) {
         if (touch_tid >= 0) sceKernelStartThread(touch_tid, 0, NULL);
     }
     vj_log("cfg: pantalla %dx%d escala=%d filtro=%d teclado=%d tecla(s) "
-           "táctil=%d juego en %.0f,%.0f %.0fx%.0f", gw, gh, c->scale,
-           c->filter, cur.nkeys, c->touch, cur.dest[0], cur.dest[1],
-           cur.dest[2], cur.dest[3]);
+           "táctil=%d juego en %.0f,%.0f %.0fx%.0f toques=%d joystick=%d,%d r%d",
+           gw, gh, c->scale, c->filter, cur.nkeys, c->touch, cur.dest[0],
+           cur.dest[1], cur.dest[2], cur.dest[3], cur_taps, c->joy[0],
+           c->joy[1], c->joy[2]);
 }

@@ -23,7 +23,16 @@ typedef struct {
     int mirror;         /* bit0 espejo horizontal, bit1 vertical */
     int speed;          /* 0 normal, 1 rápida, 2 turbo (ver vm_patches.c) */
     int auto_w, auto_h; /* detectada en el JAR (0 = sin detectar aún) */
+    /* Fase A (v1.1): botón -> toque en (x, y) del juego, en píxeles del
+     * juego (x < 0 = sin toque: manda la tecla de map[]). Solo los 12
+     * botones; las direcciones del stick usan joy[]. */
+    int tap[VJ_BTN_N][2];
+    int joy[3];         /* stick izq. = dedo en un joystick dibujado por el
+                           juego: centro x, y y radio (r <= 0: apagado) */
+    int tap_hud;        /* 1 = marcadores de los toques encima del juego */
 } vj_cfg;
+
+#define VJ_TAP_BTNS 12  /* botones con toque (sin las 4 direcciones del stick) */
 
 typedef struct {
     float x, y, w, h;
@@ -70,6 +79,15 @@ const char *cfg_key_name(int code);
  * (live=1: no toca la resolución, que la VM ya fijó). */
 void cfg_apply(const vj_cfg *c, int live);
 
+/* Coordenadas: píxel del juego <-> punto de la pantalla de la Vita
+ * (960x544), con la escala, rotación y espejo aplicados en el último frame.
+ * Devuelven 0 si aún no hay frame. */
+int cfg_game_to_screen(int gx, int gy, float *sx, float *sy);
+int cfg_screen_to_game(float sx, float sy, int *gx, int *gy);
+/* Nº de botones con toque asignado. */
+int cfg_tap_count(const vj_cfg *c);
+/* Símbolo del botón i (launcher.c): cruz, círculo… o su nombre corto. */
+void vj_button_glyph(int i, float cx, float cy, float s);
 int cfg_last_suite(void);
 void cfg_set_last_suite(int suite_id);
 
