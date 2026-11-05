@@ -138,3 +138,12 @@ void __wrap_Java_java_lang_Thread_sleep(void *traps) {
     ms = ms * vita_sleep_pct / 100;
     _ZN12JVMScheduler20sleep_current_threadEx(ms < 1 ? 1 : ms);
 }
+
+#ifdef VJ_VM_ASM
+/* VM asm: el segmento de texto terminaba justo en un borde de 64 KB
+ * (0x81510000) y vita-elf-create no tenia sitio para sus datos SCE
+ * ("Cannot allocate 3364 bytes ... segment 1 overlaps"). Este relleno de
+ * solo lectura lo aleja del borde. Si el error vuelve tras otro cambio,
+ * ajustar el tamano. */
+__attribute__((used)) const char vj_sce_pad[0x2000] = { 1 };
+#endif

@@ -1795,6 +1795,28 @@ ReturnOop Universe::new_task(int id JVM_TRAPS) {
     update_relative_pointers(); 
     if (ml.is_null()) 
       Thread::clear_current_pending_exception();
+    /* Bug real #35 (Vita, VM asm+ROM, dump HW 100/101): la lista de la
+     * ROM trae SOLO los mirrors de las clases romizadas (num), pero la
+     * class_list de la tarea tiene num + pad. La primera clase de la
+     * aplicacion (class_id == num) leia mirror_list[num] fuera del array
+     * (getstatic con TaskMirror 0x1c -> data abort), y resize_class_list
+     * no llega hasta que class_list se llena. Se completa aqui con el
+     * marcador "sin inicializar", igual que el camino sin ROM.
+     * Solo en la VM final: loopgen/romgen (host) quedan como estaban. */
+#if !ENABLE_ROM_GENERATOR && !ENABLE_INTERPRETER_GENERATOR
+    if (ml.not_null() && ml().length() < num + pad) {
+      UsingFastOops fast_oops_ml;
+      ObjArray::Fast src = ml.obj();
+      ObjArray::Fast grown = Universe::new_obj_array(num + pad JVM_CHECK_0);
+      ObjArray::array_copy(&src, 0, &grown, 0, src().length()
+                           JVM_MUST_SUCCEED);
+      TaskMirror::Raw t = task_class_init_marker();
+      for (int i = src().length(); i < num + pad; i++) {
+        grown().obj_at_put(i, &t);
+      }
+      ml = grown.obj();
+    }
+#endif
     if (ml.is_null()) 
 #endif
     {
