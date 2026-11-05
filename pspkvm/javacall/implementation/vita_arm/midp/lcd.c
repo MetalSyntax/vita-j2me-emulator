@@ -113,6 +113,22 @@ static int vita_frame_has_content(void) {
     return 0;
 }
 
+/* Sesión 55 (review v1.0: cuelgues en el menú con reinicio forzado;
+ * bringup-067 muere sin HB y bringup-075 deja la biblioteca congelada
+ * 2 h): todo lo que dibuja con vita2d (este flush y los hilos de la
+ * biblioteca, la carga y la instalación en vita/launcher.c) pasa por
+ * este cerrojo recursivo. Dos hilos dibujando a la vez con vita2d
+ * corrompen su estado y cuelgan la GPU. */
+static SceKernelLwMutexWork vita_gpu_mtx;
+static volatile int vita_gpu_mtx_ok = 0;
+
+void vita_gpu_lock(void) {
+    if (vita_gpu_mtx_ok) sceKernelLockLwMutex(&vita_gpu_mtx, 1, NULL);
+}
+void vita_gpu_unlock(void) {
+    if (vita_gpu_mtx_ok) sceKernelUnlockLwMutex(&vita_gpu_mtx, 1);
+}
+
 static int vita_loading_should_skip(int force_stop) {
     int (*hook)(int) = vita_lcd_loading_hook;
     if (!hook) return 0;
@@ -120,8 +136,12 @@ static int vita_loading_should_skip(int force_stop) {
         return 1;  /* sigue la pantalla de carga: no presentar */
     }
     /* 2 = "vita2d se va": el frontend tiene que parar SU hilo de dibujo
-     * pase lo que pase (la pantalla de instalación no para con 1). */
-    if (force_stop) hook(2);
+     * pase lo que pase (la pantalla de instalación no para con 1).
+     * Si el hook contesta 1 a eso (retención de la precarga o de la
+     * instalación), la retención SIGUE: antes se borraba aquí y un
+     * resize de MIDP durante la precarga (get_screen -> resized) dejaba
+     * a la VM dibujando encima de la biblioteca, a la vez que ella. */
+    if (force_stop && hook(2)) return 1;
     vita_lcd_loading_hook = 0;
     return 0;
 }
@@ -289,6 +309,14 @@ javacall_result javacall_lcd_init(void) {
        /* Prueba de qué VPK corre en consola (fingerprint de lib). */
        javacall_printf("VITAJ2ME-TRACE: lcd_init %dx%d vblank_wait=%d\n",
                        vscr_w, vscr_h, vita_vblank_wait);
+       if (!vita_gpu_mtx_ok) {
+           /* 2 = SCE_KERNEL_MUTEX_ATTR_RECURSIVE (el menú del juego
+            * dibuja desde dentro del flush). */
+           if (sceKernelCreateLwMutex(&vita_gpu_mtx, "vj_gpu", 2, 0,
+                                      NULL) == 0) {
+               vita_gpu_mtx_ok = 1;
+           }
+       }
        if (!j2me_tex) {
            vita2d_init();
            vita2d_set_clear_color(0xFF000000);
@@ -482,6 +510,7 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
         }
     }
 
+    vita_gpu_lock();
     vita2d_start_drawing();
     vita2d_clear_screen();
     vita2d_draw_texture_part_scale(j2me_tex,
@@ -499,6 +528,7 @@ static javacall_result javacall_lcd_flush_partial_internal(javacall_pixel* buf, 
         last = sceKernelGetProcessTimeWide();
     }
     vita2d_swap_buffers();
+    vita_gpu_unlock();
     vita_flush_count++;
     return JAVACALL_OK;
 }

@@ -37,6 +37,10 @@
 #include <string.h>
 #include <strings.h>
 
+/* lcd.c (sesión 55): un solo hilo dibuja con vita2d a la vez. */
+void vita_gpu_lock(void);
+void vita_gpu_unlock(void);
+
 #define SCR_W 960
 #define SCR_H 544
 #define MAX_GAMES 256
@@ -945,6 +949,7 @@ static void draw_empty_hint(const scene *sc) {
 
 static void draw_scene(const scene *sc) {
     int i;
+    vita_gpu_lock();
     vita2d_start_drawing();
     vita2d_clear_screen();
     draw_background(sc->frame);
@@ -959,6 +964,7 @@ static void draw_scene(const scene *sc) {
     draw_bottom_bar(sc);
     vita2d_end_drawing();
     vita2d_swap_buffers();
+    vita_gpu_unlock();
 }
 
 /* ======================================================================
@@ -1272,6 +1278,7 @@ static void draw_settings(const scene *sc, const char *subtitle,
         : mode == SET_GLOBAL ? L("Options", "Opciones", "Opções")
                              : L("Game settings", "Ajustes del juego",
                                  "Ajustes do jogo");
+    vita_gpu_lock();
     vita2d_start_drawing();
     vita2d_clear_screen();
     draw_background(sc->frame);
@@ -1342,6 +1349,7 @@ static void draw_settings(const scene *sc, const char *subtitle,
     }
     vita2d_end_drawing();
     vita2d_swap_buffers();
+    vita_gpu_unlock();
 }
 
 /* g = NULL -> opciones globales. Devuelve 1 si se guardaron cambios; en
@@ -1602,7 +1610,9 @@ int launcher_run(vj_game *out, int preselect) {
         draw_scene(&sc);
     }
 
+    vita_gpu_lock();
     vita2d_wait_rendering_done(); /* la GPU suelta iconos y atlas PGF */
+    vita_gpu_unlock();
     for (i = 0; i < sc.n; i++) {
         if (!sc.icons[i]) continue;
         /* el icono del juego elegido lo usa la pantalla de carga */
@@ -1649,6 +1659,7 @@ static void draw_loading(float fade) {
 
     /* OJO (HW 042): nada de `scene` en la pila aquí — son ~44 KB (64
      * vj_game) y este hilo tiene 32 KB: desbordaba en el primer frame. */
+    vita_gpu_lock();
     vita2d_start_drawing();
     vita2d_clear_screen();
     draw_background(ld.frame);
@@ -1745,6 +1756,7 @@ static void draw_loading(float fade) {
                               with_alpha(C_BG_BOT, (int)(255 * (1 - fade))));
     vita2d_end_drawing();
     vita2d_swap_buffers();
+    vita_gpu_unlock();
 }
 
 static int loading_thread(SceSize args, void *argp) {
@@ -1759,11 +1771,13 @@ static int loading_thread(SceSize args, void *argp) {
         ld.frame++;
         draw_loading(1.0f);
     }
+    vita_gpu_lock();
     vita2d_wait_rendering_done();
     if (ld.icon) vita2d_free_texture(ld.icon);
     ld.icon = NULL;
     vita2d_free_pgf(font);
     font = NULL;
+    vita_gpu_unlock();
     vita2d_set_vblank_wait(0);  /* lcd.c presenta sin vblank (bug #24) */
     return 0;
 }

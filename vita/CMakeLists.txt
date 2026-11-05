@@ -102,6 +102,8 @@ target_link_libraries(${PROJECT_NAME}
   -Wl,--whole-archive pthread -Wl,--no-whole-archive
   vita2d
   mpg123
+  # AMR-NB (sesión 55): build-tools/build-opencore-amr.sh, Apache 2.0
+  ${VITAJ2ME_LIBS}/libopencore-amrnb.a
   freetype
   png16
   jpeg

@@ -150,6 +150,8 @@ the phoneME code it is based on.
 - **TinySoundFont** (`tsf.h`, `tml.h`) by Bernhard Schelling: MIT.
 - **TimGM6mb.sf2** General MIDI bank by Tim Brechbill: GPLv2.
 - **libmpg123**: LGPL 2.1, as packaged by VitaSDK.
+- **opencore-amr** 0.1.6 (AMR-NB decoder, PacketVideo / Martin Storsjo):
+  Apache 2.0. License in `_prebuilt/include/opencore-amrnb/LICENSE`.
 - **vita2d**, **VitaSDK**, zlib, libpng, FreeType.
 
 Java and Java ME are trademarks of Oracle. PlayStation and PS Vita are

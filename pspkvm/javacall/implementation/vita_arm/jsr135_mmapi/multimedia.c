@@ -31,17 +31,17 @@ extern "C" {
 #include "javacall_multimedia.h"
 
 /* =====================================================================
- * VitaJ2ME audio core (Fase 3).
- * Backend: SceAudioOut directo (puerto MAIN 48kHz estéreo S16; si está
- * ocupado se usa BGM como fallback para permitir 2 sonidos solapados).
- *  - WAV/PCM: buffering Java -> parse RIFF -> worker thread por player.
- *  - Tonos Manager (audio/x-tone-seq y play_tone): seno sintetizado.
+ * VitaJ2ME audio core (Fase 3, rehecho en la sesión 55).
+ * Backend: UN puerto SceAudioOut MAIN 48 kHz estéreo S16 y un hilo
+ * mezclador (vj_mixer, núcleo 2) que suma todas las voces activas.
+ *  - WAV: PCM 8/16/24, IMA ADPCM, A-law/µ-law -> PCM a su frecuencia.
+ *  - AMR-NB (sesión 55): opencore-amr (Apache 2.0) -> PCM 8 kHz.
  *  - MIDI (sesión 45): TinySoundFont (tsf.h/tml.h, MIT) con el banco GM
- *    ux0:data/vitaj2me/lib/gm.sf2, sintetizado en streaming en el hilo
- *    del reproductor (nada de renderizar la canción entera de golpe).
- *  - MP3 (sesión 48): libmpg123 de VitaSDK en modo feed, decodificado en
- *    streaming a 48 kHz estéreo (MPG123_FORCE_RATE) en el mismo hilo.
- *  - AAC/AMR/vídeo/grabación: NO implementados (FAIL seguro).
+ *    ux0:data/vitaj2me/lib/gm.sf2, sintetizado en streaming a 32 kHz.
+ *  - MP3 (sesión 48): libmpg123 de VitaSDK en modo feed a 48 kHz.
+ *  - Tonos (Manager.playTone): voz senoidal del mezclador, no bloquea.
+ *  Todo se re-muestrea a 48 kHz con interpolación lineal.
+ *  - AAC/AMR-WB/vídeo/grabación: NO implementados (FAIL seguro).
  * ===================================================================== */
 #include <stdlib.h>
 #include <string.h>
@@ -56,13 +56,40 @@ extern "C" {
 #include "tml.h"
 #include <mpg123.h>
 
+/* ---------------------------------------------------------------------
+ * Sesión 55 — motor de audio con UN mezclador (review v1.0: "Game audio
+ * is terrible").
+ * Antes: cada Player abría su propio puerto SceAudioOut con su hilo. La
+ * Vita tiene 8 puertos MAIN + 1 BGM: con los efectos de un juego de
+ * Gameloft se agotaban (sonidos que no salen) y cada puerto competía por
+ * CPU. El re-muestreo era "vecino más cercano" (8 kHz -> 48 kHz = ruido
+ * metálico), el MIDI se sintetizaba a 48 kHz con 48 voces, los tonos
+ * de Manager.playTone BLOQUEABAN el hilo de la VM toda su duración y
+ * AMR no existía (Asphalt Nitro: 24 efectos mudos).
+ * Ahora: un hilo "vj_mixer" (núcleo 2, lejos de la VM) con un único
+ * puerto MAIN a 48 kHz mezcla hasta VITA_MIX_MAX voces. Cada voz entrega
+ * PCM a su frecuencia nativa y se re-muestrea con interpolación lineal
+ * en streaming. MIDI a 32 kHz / 32 voces; AMR-NB con opencore-amr.
+ * --------------------------------------------------------------------- */
 #define VITA_AUDIO_FREQ   48000
-#define VITA_AUDIO_GRAIN  1024   /* samples por sceAudioOutOutput */
+#define VITA_MIX_GRAIN    512    /* frames por bloque (~10.7 ms) */
+#define VITA_MIX_MAX      32     /* voces simultáneas */
+#define VITA_MIDI_FREQ    32000  /* el sinte rinde a 32 kHz (CPU) */
+#define VITA_MIDI_VOICES  32
+#define VITA_STAGE        256    /* frames de origen por recarga */
 #define VITA_PLAYER_WAV   1
 #define VITA_PLAYER_MIDI  2
 #define VITA_PLAYER_MP3   3
+#define VITA_PLAYER_AMR   4
+#define VITA_PLAYER_TONE  5      /* interno: Manager.playTone */
 #define VITA_GM_BANK      "ux0:data/vitaj2me/lib/gm.sf2"
 #define VITA_MIDI_BLOCK   64     /* resolución temporal de eventos MIDI */
+
+/* opencore-amr (Apache 2.0), _prebuilt/lib/libopencore-amrnb.a */
+void *Decoder_Interface_init(void);
+void Decoder_Interface_exit(void *state);
+void Decoder_Interface_Decode(void *state, const unsigned char *in,
+                              short *out, int bfi);
 
 typedef struct {
     javacall_int64 playerId;
@@ -70,17 +97,20 @@ typedef struct {
     unsigned char *data;   /* bytes crudos acumulados vía do_buffering */
     long dataLen;
     long dataCap;
-    short *pcm;            /* PCM S16 estéreo a 48kHz, parseado */
+    short *pcm;            /* PCM S16 estéreo a 'rate' (WAV/AMR) */
     long frames;
-    long posFrames;
+    long posFrames;        /* en frames de ORIGEN */
+    int rate;              /* Hz del origen */
     int volume;            /* 0..100 */
     int muted;
     int state;             /* 0 idle, 1 playing, 2 paused */
-    int port;              /* puerto SceAudioOut o -1 */
-    int useBgm;            /* 1 si se cayó a BGM */
-    SceUID thread;
-    int threadRun;
-    SceUID lock;
+    int inMix;             /* está en la tabla del mezclador */
+    /* re-muestreo lineal en streaming */
+    short stage[(VITA_STAGE + 1) * 2];
+    int stageLen;
+    unsigned int pos;      /* 16.16 dentro de stage */
+    unsigned int step;     /* 16.16 = rate / 48000 */
+    int eof;
     /* MIDI */
     tsf *synth;
     tml_message *midi, *midiCur;
@@ -88,14 +118,33 @@ typedef struct {
     unsigned int midiLenMs;
     /* MP3 */
     mpg123_handle *mp3;
-    long mp3Frames;        /* frames de 48 kHz ya emitidos */
-    short grain[VITA_AUDIO_GRAIN * 2]; /* propio: antes era static compartido */
+    long mp3Frames;
+    /* tono */
+    double tonePhase, toneStep;
+    long toneDone, toneTotal;
 } vita_player_t;
 
 static int vita_audio_ready = 0;
 
 /* Menú del juego abierto (vita/launcher.c): los reproductores callan. */
 volatile int vita_media_paused = 0;
+
+/* Un solo cerrojo para TODO el estado de audio: el mezclador lo toma una
+ * vez por bloque y las llamadas de Java son cortas. */
+static SceUID vita_mix_lock = -1;
+static vita_player_t *vita_mix_list[VITA_MIX_MAX];
+static SceUID vita_mix_tid = -1;
+static int vita_mix_port = -1;
+
+static void vita_lock(void) {
+    if (vita_mix_lock >= 0) sceKernelWaitSema(vita_mix_lock, 1, NULL);
+}
+static void vita_unlock(void) {
+    if (vita_mix_lock >= 0) sceKernelSignalSema(vita_mix_lock, 1);
+}
+/* compatibilidad con el resto del fichero */
+#define vita_player_lock(p)   vita_lock()
+#define vita_player_unlock(p) vita_unlock()
 
 /* Banco GM compartido; cada reproductor MIDI usa una copia ligera
  * (tsf_copy comparte las muestras). */
@@ -112,11 +161,21 @@ static tsf *vita_gm_get(void) {
     return vita_gm_bank;
 }
 
+/* Vacía el re-muestreador (tras rebobinar o saltar). */
+static void vita_stage_reset(vita_player_t *p) {
+    p->stageLen = 0;
+    p->pos = 0;
+    p->eof = 0;
+    p->step = (unsigned int)(((unsigned long long)(p->rate > 0 ? p->rate
+                              : VITA_AUDIO_FREQ) << 16) / VITA_AUDIO_FREQ);
+}
+
 static void vita_midi_rewind(vita_player_t *p) {
     p->midiCur = p->midi;
     p->midiMs = 0;
     tsf_reset(p->synth);
     tsf_channel_set_bank_preset(p->synth, 9, 128, 0); /* percusión GM */
+    vita_stage_reset(p);
 }
 
 static void vita_midi_apply(tsf *f, const tml_message *m, int notes) {
@@ -153,8 +212,9 @@ static int vita_midi_prepare(vita_player_t *p) {
     if (!p->synth) {
         p->synth = tsf_copy(bank);
         if (!p->synth) return -1;
-        tsf_set_output(p->synth, TSF_STEREO_INTERLEAVED, VITA_AUDIO_FREQ, 0);
-        tsf_set_max_voices(p->synth, 48);
+        tsf_set_output(p->synth, TSF_STEREO_INTERLEAVED, VITA_MIDI_FREQ, 0);
+        tsf_set_max_voices(p->synth, VITA_MIDI_VOICES);
+        p->rate = VITA_MIDI_FREQ;
         vita_midi_rewind(p);
     }
     return 0;
@@ -192,203 +252,479 @@ static int vita_mp3_prepare(vita_player_t *p) {
         vita_mp3_close(p);
         return -1;
     }
+    p->rate = VITA_AUDIO_FREQ;
     p->mp3Frames = 0;
+    vita_stage_reset(p);
     return 0;
 }
 
-/* Rinde un grano; 1 = fin del fichero. */
-static int vita_mp3_render(vita_player_t *p) {
-    unsigned char *out = (unsigned char *)p->grain;
-    size_t want = sizeof(p->grain), got = 0;
-    int tries = 0;
-    while (got < want && tries++ < 64) {
-        size_t done = 0;
-        int r = mpg123_read(p->mp3, out + got, want - got, &done);
-        got += done;
-        if (r == MPG123_NEW_FORMAT || (r == MPG123_OK && done)) continue;
-        if (r != MPG123_OK) break;  /* NEED_MORE/DONE/ERR: no queda nada */
-    }
-    if (got < want) memset(out + got, 0, want - got);
-    p->mp3Frames += (long)(got / 4);
-    return got == 0;
+/* --- Decodificadores a PCM estéreo S16 a la frecuencia original --- */
+
+static const int vita_ima_steps[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37,
+    41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173,
+    190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658,
+    724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+    2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484,
+    7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500,
+    20350, 22385, 24623, 27086, 29794, 32767
+};
+static const int vita_ima_index[16] = {
+    -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8
+};
+
+static short vita_ima_nibble(int nib, int *pred, int *idx) {
+    int step = vita_ima_steps[*idx];
+    int diff = step >> 3;
+    if (nib & 1) diff += step >> 2;
+    if (nib & 2) diff += step >> 1;
+    if (nib & 4) diff += step;
+    if (nib & 8) *pred -= diff; else *pred += diff;
+    if (*pred > 32767) *pred = 32767;
+    if (*pred < -32768) *pred = -32768;
+    *idx += vita_ima_index[nib & 15];
+    if (*idx < 0) *idx = 0;
+    if (*idx > 88) *idx = 88;
+    return (short)*pred;
 }
 
-/* Rinde un grano; devuelve 1 cuando la canción (y su cola) terminó. */
-static int vita_midi_render(vita_player_t *p) {
-    int i;
-    for (i = 0; i < VITA_AUDIO_GRAIN; i += VITA_MIDI_BLOCK) {
-        p->midiMs += VITA_MIDI_BLOCK * 1000.0 / VITA_AUDIO_FREQ;
-        while (p->midiCur && p->midiCur->time <= p->midiMs) {
-            vita_midi_apply(p->synth, p->midiCur, 1);
-            p->midiCur = p->midiCur->next;
+/* IMA ADPCM de WAV (fmt 0x11): bloques de 'align' bytes. */
+static long vita_ima_decode(const unsigned char *d, long len, int ch,
+                            int align, short *out, long maxFrames) {
+    long frames = 0;
+    if (align < 4 * ch) return 0;
+    while (len >= align && frames < maxFrames) {
+        int pred[2], idx[2], c, b;
+        const unsigned char *blk = d;
+        for (c = 0; c < ch; c++) {
+            pred[c] = (short)(blk[c * 4] | (blk[c * 4 + 1] << 8));
+            idx[c] = blk[c * 4 + 2];
+            if (idx[c] > 88) idx[c] = 88;
         }
-        tsf_render_short(p->synth, p->grain + i * 2, VITA_MIDI_BLOCK, 0);
+        out[frames * 2] = (short)pred[0];
+        out[frames * 2 + 1] = (short)pred[ch - 1];
+        frames++;
+        blk += 4 * ch;
+        /* luego grupos de 4 bytes por canal (8 muestras) */
+        while (blk + 4 * ch <= d + align && frames + 8 <= maxFrames) {
+            short s[2][8];
+            for (c = 0; c < ch; c++) {
+                for (b = 0; b < 4; b++) {
+                    int v = blk[c * 4 + b];
+                    s[c][b * 2] = vita_ima_nibble(v & 15, &pred[c], &idx[c]);
+                    s[c][b * 2 + 1] = vita_ima_nibble(v >> 4, &pred[c], &idx[c]);
+                }
+            }
+            for (b = 0; b < 8; b++) {
+                out[frames * 2] = s[0][b];
+                out[frames * 2 + 1] = s[ch - 1][b];
+                frames++;
+            }
+            blk += 4 * ch;
+        }
+        d += align;
+        len -= align;
     }
-    return !p->midiCur && (p->midiMs > p->midiLenMs + 1000 ||
-                           !tsf_active_voice_count(p->synth));
+    return frames;
 }
 
-static void vita_player_lock(vita_player_t *p) {
-    if (p->lock >= 0) sceKernelWaitSema(p->lock, 1, NULL);
+static short vita_ulaw(unsigned char u) {
+    int t;
+    u = ~u;
+    t = ((u & 0x0F) << 3) + 0x84;
+    t <<= (u & 0x70) >> 4;
+    return (short)((u & 0x80) ? (0x84 - t) : (t - 0x84));
 }
-static void vita_player_unlock(vita_player_t *p) {
-    if (p->lock >= 0) sceKernelSignalSema(p->lock, 1);
+static short vita_alaw(unsigned char a) {
+    int t, seg;
+    a ^= 0x55;
+    t = (a & 0x0F) << 4;
+    seg = (a & 0x70) >> 4;
+    if (seg == 0) t += 8;
+    else if (seg == 1) t += 0x108;
+    else { t += 0x108; t <<= seg - 1; }
+    return (short)((a & 0x80) ? t : -t);
 }
 
-static void vita_player_apply_volume(vita_player_t *p) {
-    if (p->port < 0) return;
-    int v = p->muted ? 0 : (p->volume * SCE_AUDIO_OUT_MAX_VOL) / 100;
-    int vol[2] = { v, v };
-    sceAudioOutSetVolume(p->port,
-        SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vol);
-}
-
-static int vita_player_open_port(vita_player_t *p) {
-    if (p->port >= 0) return 0;
-    p->port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN,
-                                  VITA_AUDIO_GRAIN, VITA_AUDIO_FREQ,
-                                  SCE_AUDIO_OUT_MODE_STEREO);
-    p->useBgm = 0;
-    if (p->port < 0) {
-        p->port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM,
-                                      VITA_AUDIO_GRAIN, VITA_AUDIO_FREQ,
-                                      SCE_AUDIO_OUT_MODE_STEREO);
-        p->useBgm = 1;
+static void vita_log_header(const char *what, const vita_player_t *p) {
+    char hex[3 * 48 + 1];
+    long i, n = p->dataLen < 48 ? p->dataLen : 48;
+    for (i = 0; i < n; i++) {
+        static const char h[] = "0123456789abcdef";
+        hex[i * 3] = h[p->data[i] >> 4];
+        hex[i * 3 + 1] = h[p->data[i] & 15];
+        hex[i * 3 + 2] = ' ';
     }
-    if (p->port < 0) {
-        p->port = -1;
-        return -1;
-    }
-    vita_player_apply_volume(p);
-    return 0;
+    hex[n * 3] = 0;
+    javacall_printf("VITAJ2ME-AUDIO: %s (%ld B): %s\n", what, p->dataLen, hex);
 }
 
-static void vita_player_close_port(vita_player_t *p) {
-    if (p->port >= 0) {
-        sceAudioOutReleasePort(p->port);
-        p->port = -1;
-    }
-}
-
-/* Parse mínimo RIFF/WAV -> PCM S16 estéreo 48kHz (re-muestreo nearest). */
+/* RIFF/WAVE tolerante -> PCM S16 estéreo a la frecuencia original.
+ * Acepta PCM 8/16 bits, IMA ADPCM, A-law/µ-law y WAVE_FORMAT_EXTENSIBLE;
+ * tamaños de chunk "data" a 0 o más largos que el buffer (cabeceras que
+ * algunos juegos generan en tiempo de ejecución) usan lo que haya. */
 static int vita_parse_wav(vita_player_t *p) {
     unsigned char *d = p->data;
     long n = p->dataLen;
-    if (n < 44 || memcmp(d, "RIFF", 4) != 0 || memcmp(d + 8, "WAVE", 4) != 0) {
+    long off = 12, dataOff = -1, dataLen = 0, maxFrames, frames = 0, i;
+    int fmt = -1, channels = 0, rate = 0, bits = 0, align = 0;
+    short *pcm;
+    if (!d || n < 12 || memcmp(d, "RIFF", 4) != 0 ||
+        memcmp(d + 8, "WAVE", 4) != 0) {
         return -1;
     }
-    long off = 12;
-    int channels = 0, rate = 0, bits = 0;
-    long dataOff = -1, dataLen = 0;
     while (off + 8 <= n) {
-        long chunkLen = (long)(d[off+4] | (d[off+5]<<8) | (d[off+6]<<16) | (d[off+7]<<24));
-        if (memcmp(d + off, "fmt ", 4) == 0 && chunkLen >= 16) {
-            int audioFmt = d[off+8] | (d[off+9]<<8);
-            channels = d[off+10] | (d[off+11]<<8);
-            rate = d[off+12] | (d[off+13]<<8) | (d[off+14]<<16) | (d[off+15]<<24);
-            bits = d[off+24] | (d[off+25]<<8);
-            if (audioFmt != 1) return -1; /* solo PCM */
+        unsigned long chunkLen = (unsigned long)d[off+4] | ((unsigned long)d[off+5] << 8) |
+                                 ((unsigned long)d[off+6] << 16) | ((unsigned long)d[off+7] << 24);
+        if (memcmp(d + off, "fmt ", 4) == 0 && off + 8 + 16 <= n) {
+            fmt = d[off+8] | (d[off+9] << 8);
+            channels = d[off+10] | (d[off+11] << 8);
+            rate = d[off+12] | (d[off+13] << 8) | (d[off+14] << 16) | (d[off+15] << 24);
+            align = d[off+20] | (d[off+21] << 8);
+            bits = d[off+22] | (d[off+23] << 8);
+            if (fmt == 0xFFFE && chunkLen >= 40 && off + 8 + 26 <= n) {
+                fmt = d[off+32] | (d[off+33] << 8); /* subformato */
+            }
         } else if (memcmp(d + off, "data", 4) == 0) {
             dataOff = off + 8;
-            dataLen = chunkLen;
-            break; /* data suele ir al final */
+            dataLen = (chunkLen == 0 || chunkLen > (unsigned long)(n - dataOff))
+                      ? n - dataOff : (long)chunkLen;
+            break;
         }
-        off += 8 + chunkLen + (chunkLen & 1);
+        if (chunkLen > (unsigned long)n) break;
+        off += 8 + (long)chunkLen + (long)(chunkLen & 1);
     }
-    if (dataOff < 0 || channels < 1 || channels > 2 || (bits != 8 && bits != 16)) {
+    if (dataOff < 0 || dataLen <= 0 || channels < 1 || channels > 2 ||
+        rate < 1000 || rate > 96000) {
+        vita_log_header("WAV sin fmt/data válidos", p);
         return -1;
     }
-    if (dataOff + dataLen > n) dataLen = n - dataOff;
-    long inFrames = dataLen / (channels * (bits / 8));
-    if (inFrames <= 0) return -1;
-    /* Re-muestreo a 48kHz: outFrames = inFrames * 48000 / rate */
-    long outFrames = (long)((double)inFrames * VITA_AUDIO_FREQ / rate) + 1;
-    short *pcm = (short *)malloc(outFrames * 2 * sizeof(short));
+    if (fmt == 1 && (bits == 8 || bits == 16 || bits == 24)) {
+        maxFrames = dataLen / (channels * (bits / 8));
+    } else if (fmt == 6 || fmt == 7) {
+        maxFrames = dataLen / channels;
+    } else if (fmt == 0x11 && bits == 4 && align > 0) {
+        maxFrames = (dataLen / align + 1) * ((align - 4 * channels) * 2 / channels + 1);
+    } else {
+        javacall_printf("VITAJ2ME-AUDIO: WAV formato %d (%d bits) sin soporte\n",
+                        fmt, bits);
+        vita_log_header("cabecera", p);
+        return -1;
+    }
+    if (maxFrames <= 0) return -1;
+    pcm = (short *)malloc((size_t)maxFrames * 2 * sizeof(short));
     if (!pcm) return -1;
-    long i;
-    for (i = 0; i < outFrames; i++) {
-        long si = (long)((double)i * rate / VITA_AUDIO_FREQ);
-        if (si >= inFrames) si = inFrames - 1;
-        long vL, vR;
-        if (bits == 16) {
-            short *s = (short *)(d + dataOff + si * channels * 2);
-            vL = s[0];
-            vR = (channels > 1) ? s[1] : s[0];
-        } else {
-            unsigned char *u = d + dataOff + si * channels;
-            vL = ((int)u[0] - 128) * 256;
-            vR = (channels > 1) ? (((int)u[1] - 128) * 256) : vL;
+    d += dataOff;
+    if (fmt == 0x11) {
+        frames = vita_ima_decode(d, dataLen, channels, align, pcm, maxFrames);
+    } else {
+        int bps = (fmt == 1) ? bits / 8 : 1;
+        for (i = 0; i < maxFrames; i++) {
+            const unsigned char *s = d + i * channels * bps;
+            int c, v[2];
+            for (c = 0; c < channels; c++) {
+                const unsigned char *u = s + c * bps;
+                if (fmt == 6) v[c] = vita_alaw(u[0]);
+                else if (fmt == 7) v[c] = vita_ulaw(u[0]);
+                else if (bits == 8) v[c] = ((int)u[0] - 128) << 8;
+                else if (bits == 16) v[c] = (short)(u[0] | (u[1] << 8));
+                else v[c] = (short)(u[1] | (u[2] << 8));
+            }
+            pcm[i * 2] = (short)v[0];
+            pcm[i * 2 + 1] = (short)v[channels - 1];
         }
-        pcm[i * 2] = (short)vL;
-        pcm[i * 2 + 1] = (short)vR;
+        frames = maxFrames;
+    }
+    if (frames <= 0) {
+        free(pcm);
+        return -1;
     }
     free(p->pcm);
     p->pcm = pcm;
-    p->frames = outFrames;
+    p->frames = frames;
     p->posFrames = 0;
+    p->rate = rate;
+    vita_stage_reset(p);
     return 0;
 }
 
-static int vita_player_thread(SceSize args, void *argp) {
-    (void)args;
-    vita_player_t *p = *(vita_player_t **)argp;
-    short *grain = p->grain;
-    while (p->threadRun) {
-        vita_player_lock(p);
-        int playing = p->state == 1 && !vita_media_paused &&
-            (p->kind == VITA_PLAYER_MIDI ? p->synth != NULL
-             : p->kind == VITA_PLAYER_MP3 ? p->mp3 != NULL
-                                          : (p->pcm && p->posFrames < p->frames));
-        vita_player_unlock(p);
-        if (!playing) {
-            sceKernelDelayThreadCB(10000); /* 10ms */
-            continue;
+/* AMR-NB (#!AMR\n, 8 kHz mono): todo el fichero a PCM de una vez (los
+ * efectos de los juegos son cortos: 1 s de AMR = 16 KB de PCM). */
+static int vita_parse_amr(vita_player_t *p) {
+    static const int sizes[16] = { 12, 13, 15, 17, 19, 20, 26, 31, 5,
+                                   0, 0, 0, 0, 0, 0, 0 };
+    const unsigned char *d = p->data;
+    long n = p->dataLen, off = 6, frames = 0, cap;
+    void *dec;
+    short *pcm;
+    if (!d || n < 7 || memcmp(d, "#!AMR\n", 6) != 0) {
+        vita_log_header(n >= 9 && !memcmp(d, "#!AMR-WB\n", 9)
+                        ? "AMR-WB sin soporte" : "AMR inválido", p);
+        return -1;
+    }
+    cap = (n - 6) * 160 + 160;  /* cota: frame más corto = 1 byte */
+    pcm = (short *)malloc((size_t)cap * 2 * sizeof(short));
+    if (!pcm) return -1;
+    dec = Decoder_Interface_init();
+    if (!dec) {
+        free(pcm);
+        return -1;
+    }
+    while (off < n && frames + 160 <= cap) {
+        int mode = (d[off] >> 3) & 15, size = sizes[mode] + 1, i;
+        short mono[160];
+        unsigned char frame[32];
+        if (off + size > n) break;
+        memset(frame, 0, sizeof(frame));
+        memcpy(frame, d + off, (size_t)size);
+        Decoder_Interface_Decode(dec, frame, mono, 0);
+        for (i = 0; i < 160; i++) {
+            pcm[(frames + i) * 2] = mono[i];
+            pcm[(frames + i) * 2 + 1] = mono[i];
         }
-        if (p->kind == VITA_PLAYER_MIDI || p->kind == VITA_PLAYER_MP3) {
-            int ended;
-            vita_player_lock(p);
-            if (p->kind == VITA_PLAYER_MIDI) {
-                ended = vita_midi_render(p);
-                if (ended) vita_midi_rewind(p);
-            } else {
-                ended = vita_mp3_render(p);
-                if (ended) vita_mp3_close(p);
-            }
-            if (ended) p->state = 0;
-            vita_player_unlock(p);
-            sceAudioOutOutput(p->port, grain);
-            if (ended) {
-                javanotify_on_media_notification(
-                    JAVACALL_EVENT_MEDIA_END_OF_MEDIA, p->playerId, 0);
-            }
-            continue;
-        }
+        frames += 160;
+        off += size;
+    }
+    Decoder_Interface_exit(dec);
+    if (frames <= 0) {
+        free(pcm);
+        return -1;
+    }
+    free(p->pcm);
+    p->pcm = pcm;
+    p->frames = frames;
+    p->posFrames = 0;
+    p->rate = 8000;
+    vita_stage_reset(p);
+    return 0;
+}
+
+/* --- Fuentes: entregan frames estéreo a su frecuencia (0 = fin) --- */
+
+static int vita_src_pull(vita_player_t *p, short *dst, int want) {
+    int got = 0;
+    switch (p->kind) {
+    case VITA_PLAYER_WAV:
+    case VITA_PLAYER_AMR: {
         long left = p->frames - p->posFrames;
-        long chunk = left > VITA_AUDIO_GRAIN ? VITA_AUDIO_GRAIN : left;
-        memcpy(grain, p->pcm + p->posFrames * 2, (size_t)chunk * 2 * sizeof(short));
-        if (chunk < VITA_AUDIO_GRAIN) {
-            memset(grain + chunk * 2, 0,
-                   (size_t)(VITA_AUDIO_GRAIN - chunk) * 2 * sizeof(short));
+        got = left > want ? want : (int)left;
+        if (got > 0) {
+            memcpy(dst, p->pcm + p->posFrames * 2, (size_t)got * 4);
+            p->posFrames += got;
         }
-        sceAudioOutOutput(p->port, grain);
-        vita_player_lock(p);
-        p->posFrames += chunk;
-        int ended = (p->posFrames >= p->frames);
-        if (ended) {
-            p->state = 0;
-            p->posFrames = 0;
+        return got;
+    }
+    case VITA_PLAYER_MIDI:
+        if (!p->synth) return 0;
+        while (got + VITA_MIDI_BLOCK <= want) {
+            if (!p->midiCur && (p->midiMs > p->midiLenMs + 1000 ||
+                                !tsf_active_voice_count(p->synth))) {
+                break;  /* canción y cola terminadas */
+            }
+            p->midiMs += VITA_MIDI_BLOCK * 1000.0 / VITA_MIDI_FREQ;
+            while (p->midiCur && p->midiCur->time <= p->midiMs) {
+                vita_midi_apply(p->synth, p->midiCur, 1);
+                p->midiCur = p->midiCur->next;
+            }
+            tsf_render_short(p->synth, dst + got * 2, VITA_MIDI_BLOCK, 0);
+            got += VITA_MIDI_BLOCK;
         }
-        vita_player_unlock(p);
-        if (ended) {
-            javanotify_on_media_notification(
-                JAVACALL_EVENT_MEDIA_END_OF_MEDIA, p->playerId, 0);
+        return got;
+    case VITA_PLAYER_MP3: {
+        size_t bytes = 0, wantB = (size_t)want * 4;
+        int tries = 0;
+        if (!p->mp3) return 0;
+        while (bytes < wantB && tries++ < 64) {
+            size_t done = 0;
+            int r = mpg123_read(p->mp3, (unsigned char *)dst + bytes,
+                                wantB - bytes, &done);
+            bytes += done;
+            if (r == MPG123_NEW_FORMAT || (r == MPG123_OK && done)) continue;
+            if (r != MPG123_OK) break;
+        }
+        got = (int)(bytes / 4);
+        p->mp3Frames += got;
+        return got;
+    }
+    case VITA_PLAYER_TONE: {
+        long ramp = VITA_AUDIO_FREQ * 5 / 1000;
+        while (got < want && p->toneDone < p->toneTotal) {
+            long left = p->toneTotal - p->toneDone;
+            double env = 1.0;
+            short s;
+            if (p->toneDone < ramp) env = (double)p->toneDone / ramp;
+            else if (left < ramp) env = (double)left / ramp;
+            s = (short)(sin(p->tonePhase) * 30000.0 * env);
+            p->tonePhase += p->toneStep;
+            if (p->tonePhase > 6.283185307179586) p->tonePhase -= 6.283185307179586;
+            dst[got * 2] = s;
+            dst[got * 2 + 1] = s;
+            got++;
+            p->toneDone++;
+        }
+        return got;
+    }
+    }
+    return 0;
+}
+
+/* Re-muestreo lineal en streaming a 48 kHz. Devuelve frames escritos
+ * (< n = la fuente terminó). */
+static int vita_voice_render(vita_player_t *p, short *out, int n) {
+    int o = 0;
+    while (o < n) {
+        unsigned int i = p->pos >> 16;
+        const short *a;
+        int f;
+        if ((int)i + 1 >= p->stageLen) {
+            int got;
+            if (p->eof) break;
+            if (p->stageLen > 0) {  /* conservar el último frame */
+                p->stage[0] = p->stage[(p->stageLen - 1) * 2];
+                p->stage[1] = p->stage[(p->stageLen - 1) * 2 + 1];
+                p->pos -= (unsigned int)(p->stageLen - 1) << 16;
+                p->stageLen = 1;
+            }
+            got = vita_src_pull(p, p->stage + p->stageLen * 2, VITA_STAGE);
+            if (got <= 0) {
+                p->eof = 1;
+                break;
+            }
+            p->stageLen += got;
+            continue;
+        }
+        a = p->stage + i * 2;
+        f = (int)(p->pos & 0xFFFF);
+        out[o * 2] = (short)(a[0] + (((a[2] - a[0]) * f) >> 16));
+        out[o * 2 + 1] = (short)(a[1] + (((a[3] - a[1]) * f) >> 16));
+        o++;
+        p->pos += p->step;
+    }
+    return o;
+}
+
+/* Vuelve al principio tras terminar (un Player puede volver a start()). */
+static void vita_voice_rewind(vita_player_t *p) {
+    if (p->kind == VITA_PLAYER_MIDI && p->synth) vita_midi_rewind(p);
+    else if (p->kind == VITA_PLAYER_MP3) vita_mp3_close(p);
+    p->posFrames = 0;
+    vita_stage_reset(p);
+}
+
+static void vita_mix_remove(vita_player_t *p) {
+    int i;
+    for (i = 0; i < VITA_MIX_MAX; i++) {
+        if (vita_mix_list[i] == p) vita_mix_list[i] = NULL;
+    }
+    p->inMix = 0;
+}
+
+/* Con el cerrojo tomado. */
+static int vita_mix_add(vita_player_t *p) {
+    int i;
+    if (p->inMix) return 0;
+    for (i = 0; i < VITA_MIX_MAX; i++) {
+        if (!vita_mix_list[i]) {
+            vita_mix_list[i] = p;
+            p->inMix = 1;
+            return 0;
         }
     }
+    return -1;
+}
+
+static int vita_mix_thread(SceSize args, void *argp) {
+    static short out[2][VITA_MIX_GRAIN * 2];
+    static short tmp[VITA_MIX_GRAIN * 2];
+    static int acc[VITA_MIX_GRAIN * 2];
+    int cur = 0;
+    (void)args; (void)argp;
+    for (;;) {
+        javacall_int64 ended[VITA_MIX_MAX];
+        int nend = 0, i, k;
+        memset(acc, 0, sizeof(acc));
+        vita_lock();
+        for (i = 0; i < VITA_MIX_MAX; i++) {
+            vita_player_t *p = vita_mix_list[i];
+            int got, gain;
+            if (!p) continue;
+            if (p->kind == VITA_PLAYER_TONE && p->state != 1) {
+                vita_mix_list[i] = NULL;  /* tono terminado o parado */
+                free(p);
+                continue;
+            }
+            if (p->state != 1 || vita_media_paused) continue;
+            got = vita_voice_render(p, tmp, VITA_MIX_GRAIN);
+            gain = p->muted ? 0 : (p->volume * 256) / 100;
+            if (gain) {
+                for (k = 0; k < got * 2; k++) acc[k] += (tmp[k] * gain) >> 8;
+            }
+            if (got < VITA_MIX_GRAIN) {
+                p->state = 0;
+                if (p->kind != VITA_PLAYER_TONE) {
+                    vita_voice_rewind(p);
+                    ended[nend++] = p->playerId;
+                }
+            }
+        }
+        vita_unlock();
+        for (k = 0; k < VITA_MIX_GRAIN * 2; k++) {
+            int v = acc[k];
+            out[cur][k] = (short)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+        }
+        sceAudioOutOutput(vita_mix_port, out[cur]);
+        cur ^= 1;
+        for (i = 0; i < nend; i++) {
+            javanotify_on_media_notification(
+                JAVACALL_EVENT_MEDIA_END_OF_MEDIA, ended[i], 0);
+        }
+    }
+    return 0;
+}
+
+/* Arranca el mezclador una sola vez (primer Player o primer tono). */
+static int vita_mix_start(void) {
+    if (vita_mix_tid >= 0) return 0;
+    if (vita_mix_lock < 0) {
+        vita_mix_lock = sceKernelCreateSema("vj_mixlock", 0, 1, 1, NULL);
+        if (vita_mix_lock < 0) return -1;
+    }
+    vita_mix_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN,
+                                        VITA_MIX_GRAIN, VITA_AUDIO_FREQ,
+                                        SCE_AUDIO_OUT_MODE_STEREO);
+    if (vita_mix_port < 0) {
+        vita_mix_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM,
+                                            VITA_MIX_GRAIN, VITA_AUDIO_FREQ,
+                                            SCE_AUDIO_OUT_MODE_STEREO);
+    }
+    if (vita_mix_port < 0) {
+        javacall_printf("VITAJ2ME-AUDIO: sin puerto de audio (0x%08x)\n",
+                        (unsigned)vita_mix_port);
+        return -1;
+    }
+    {
+        int vol[2] = { SCE_AUDIO_OUT_MAX_VOL, SCE_AUDIO_OUT_MAX_VOL };
+        sceAudioOutSetVolume(vita_mix_port,
+            SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vol);
+    }
+    /* Núcleo 2: la VM vive en el 0 y la biblioteca/táctil en el 1. */
+    vita_mix_tid = sceKernelCreateThread("vj_mixer", vita_mix_thread, 0x40,
+                                         0x10000, 0,
+                                         SCE_KERNEL_CPU_MASK_USER_2, NULL);
+    if (vita_mix_tid < 0) {
+        javacall_printf("VITAJ2ME-AUDIO: hilo del mezclador 0x%08x\n",
+                        (unsigned)vita_mix_tid);
+        sceAudioOutReleasePort(vita_mix_port);
+        vita_mix_port = -1;
+        return -1;
+    }
+    sceKernelStartThread(vita_mix_tid, 0, NULL);
+    javacall_printf("VITAJ2ME-AUDIO: mezclador listo (48 kHz, %d voces, "
+                    "bloque %d)\n", VITA_MIX_MAX, VITA_MIX_GRAIN);
     return 0;
 }
 
 /* --- Sintetizador de tonos (Manager.playTone / audio/x-tone-seq) --- */
-static volatile int vita_tone_abort = 0;
 
 static double vita_note_freq(long note) {
     /* note = ln(freq/8.176) * 17.31234049066755  =>  freq = 8.176 * e^(n/17.31) */
@@ -417,7 +753,7 @@ const javacall_media_caps* javacall_media_get_caps(void) {
  * Query whether audio mixing is supported or not
  */
 javacall_bool javacall_media_supports_mixing() {
-    return JAVACALL_TRUE; /* MAIN + fallback BGM */
+    return JAVACALL_TRUE; /* mezclador propio */
 }
 
 /**
@@ -442,7 +778,7 @@ javacall_result javacall_media_initialize(void) {
  */
 javacall_result javacall_media_finalize(void) {
     vita_audio_ready = 0;
-    vita_tone_abort = 1;
+    javacall_media_stop_tone();
     return JAVACALL_OK;
 }
 
@@ -501,26 +837,27 @@ javacall_handle javacall_media_create(javacall_int64 playerId,
                !strcmp(mimeBuf, "audio/mpeg3") ||
                !strcmp(mimeBuf, "audio/x-mp3")) {
         kind = VITA_PLAYER_MP3;
+    } else if (!strcmp(mimeBuf, "audio/amr") ||
+               !strcmp(mimeBuf, "audio/x-amr") ||
+               !strcmp(mimeBuf, "audio/amr-nb")) {
+        kind = VITA_PLAYER_AMR;
     } else {
         javacall_printf("javacall_media_create: mime no soportado: %s\n", mimeBuf);
         return 0;
     }
 
+    if (vita_mix_start() != 0) {
+        return 0;
+    }
     vita_player_t *p = (vita_player_t *)calloc(1, sizeof(vita_player_t));
     if (!p) {
         return 0;
     }
     p->playerId = playerId;
     p->kind = kind;
-    p->port = -1;
     p->volume = 100;
-    p->lock = sceKernelCreateSema("VitaPlayerMutex", 0, 1, 1, NULL);
-    p->threadRun = 1;
-    p->thread = sceKernelCreateThread("vitaj2me_audio", vita_player_thread,
-                                      0x40, 0x4000, 0, 0, 0);
-    if (p->thread >= 0) {
-        sceKernelStartThread(p->thread, sizeof(&p), &p);
-    }
+    p->rate = VITA_AUDIO_FREQ;
+    vita_stage_reset(p);
     return (javacall_handle)p;
 }
 
@@ -553,7 +890,7 @@ javacall_result javacall_media_close(javacall_handle handle) {
     }
     vita_player_lock(p);
     p->state = 0;
-    vita_player_close_port(p);
+    vita_mix_remove(p);
     vita_player_unlock(p);
     return JAVACALL_OK;
 }
@@ -572,20 +909,16 @@ javacall_result javacall_media_destroy(javacall_handle handle){
     if (!p) {
         return JAVACALL_FAIL;
     }
-    p->threadRun = 0;
-    if (p->thread >= 0) {
-        sceKernelWaitThreadEnd(p->thread, NULL, NULL);
-        sceKernelDeleteThread(p->thread);
-    }
-    vita_player_close_port(p);
+    /* fuera del mezclador antes de liberar nada */
+    vita_lock();
+    p->state = 0;
+    vita_mix_remove(p);
+    vita_unlock();
     if (p->synth) tsf_close(p->synth);
     vita_mp3_close(p);
     if (p->midi) tml_free(p->midi);
     free(p->data);
     free(p->pcm);
-    if (p->lock >= 0) {
-        sceKernelDeleteSema(p->lock);
-    }
     free(p);
     return JAVACALL_OK;
 }
@@ -624,7 +957,7 @@ javacall_result javacall_media_release_device(javacall_handle handle) {
     }
     vita_player_lock(p);
     p->state = 0;
-    vita_player_close_port(p);
+    vita_mix_remove(p);
     vita_player_unlock(p);
     return JAVACALL_OK;
 }
@@ -658,6 +991,9 @@ javacall_result javacall_media_protocol_handled_by_device(javacall_handle handle
  */
 long javacall_media_do_buffering(javacall_handle handle, const void* buffer, long length, long offset) {
     vita_player_t *p = (vita_player_t *)handle;
+    if (p && !buffer && length < 0) {
+        return 0;  /* fin del buffering (KNI manda NULL, -1, -1) */
+    }
     if (!p || !buffer || length <= 0 || offset < 0) {
         return -1;
     }
@@ -670,6 +1006,7 @@ long javacall_media_do_buffering(javacall_handle handle, const void* buffer, lon
         p->pcm = NULL;
         p->frames = 0;
         p->posFrames = 0;
+        vita_stage_reset(p);
     }
     if (offset != p->dataLen) {
         /* Solo buffering secuencial. */
@@ -689,7 +1026,10 @@ long javacall_media_do_buffering(javacall_handle handle, const void* buffer, lon
     memcpy(p->data + p->dataLen, buffer, (size_t)length);
     p->dataLen += length;
     vita_player_unlock(p);
-    return p->dataLen;
+    /* KNI suma el valor devuelto a su offset: son los bytes de ESTA
+     * llamada, no el total (con el total, el 3.er bloque de un fichero
+     * > 100 KB fallaba por offset descuadrado). */
+    return length;
 }
 
 /**
@@ -741,15 +1081,19 @@ javacall_result javacall_media_start(javacall_handle handle) {
             return JAVACALL_FAIL;
         }
     } else if (!p->pcm) {
-        if (vita_parse_wav(p) != 0) {
+        int r = p->kind == VITA_PLAYER_AMR ? vita_parse_amr(p)
+                                           : vita_parse_wav(p);
+        if (r != 0) {
             vita_player_unlock(p);
-            javacall_printf("javacall_media_start: WAV inválido\n");
+            javacall_printf("javacall_media_start: %s inválido\n",
+                            p->kind == VITA_PLAYER_AMR ? "AMR" : "WAV");
             return JAVACALL_FAIL;
         }
     }
-    if (vita_player_open_port(p) != 0) {
+    if (vita_mix_add(p) != 0) {
         vita_player_unlock(p);
-        javacall_printf("javacall_media_start: sin puerto de audio\n");
+        javacall_printf("javacall_media_start: %d voces ocupadas\n",
+                        VITA_MIX_MAX);
         return JAVACALL_FAIL;
     }
     p->state = 1;
@@ -769,11 +1113,11 @@ javacall_result javacall_media_stop(javacall_handle handle) {
     if (!p) {
         return JAVACALL_FAIL;
     }
+    /* JSR-135: stop() PAUSA y conserva el tiempo; start() sigue desde
+     * ahí (rebobinar es setMediaTime(0) o el fin del medio). */
     vita_player_lock(p);
     p->state = 0;
-    p->posFrames = 0;
-    if (p->synth) vita_midi_rewind(p);
-    vita_mp3_close(p);
+    if (p->synth) tsf_note_off_all(p->synth);
     vita_player_unlock(p);
     return JAVACALL_OK;
 }
@@ -832,10 +1176,10 @@ long javacall_media_get_time(javacall_handle handle) {
     if (p && p->kind == VITA_PLAYER_MP3) {
         return (long)(p->mp3Frames * 1000 / VITA_AUDIO_FREQ);
     }
-    if (!p || !p->pcm) {
+    if (!p || !p->pcm || p->rate <= 0) {
         return -1;
     }
-    return (long)(p->posFrames * 1000 / VITA_AUDIO_FREQ);
+    return (long)((long long)p->posFrames * 1000 / p->rate);
 }
 
 /**
@@ -857,6 +1201,7 @@ long javacall_media_set_time(javacall_handle handle, long ms) {
                 p->midiCur = p->midiCur->next;
             }
             p->midiMs = ms;
+            vita_stage_reset(p);
         }
         vita_player_unlock(p);
         return ms;
@@ -873,10 +1218,11 @@ long javacall_media_set_time(javacall_handle handle, long ms) {
         return -1;
     }
     vita_player_lock(p);
-    p->posFrames = ms * VITA_AUDIO_FREQ / 1000;
+    p->posFrames = (long)((long long)ms * p->rate / 1000);
     if (p->posFrames > p->frames) {
         p->posFrames = p->frames;
     }
+    vita_stage_reset(p);
     vita_player_unlock(p);
     return ms;
 }
@@ -897,10 +1243,10 @@ long javacall_media_get_duration(javacall_handle handle) {
         }
         return p->midi ? (long)p->midiLenMs : -1;
     }
-    if (!p || !p->pcm) {
+    if (!p || !p->pcm || p->rate <= 0) {
         return -1;
     }
-    return (long)(p->frames * 1000 / VITA_AUDIO_FREQ);
+    return (long)((long long)p->frames * 1000 / p->rate);
 }
 
 /**
@@ -936,8 +1282,7 @@ long javacall_media_set_volume(javacall_handle handle, long level) {
     if (level < 0) level = 0;
     if (level > 100) level = 100;
     vita_player_lock(p);
-    p->volume = (int)level;
-    vita_player_apply_volume(p);
+    p->volume = (int)level;  /* el mezclador lo aplica en el siguiente bloque */
     vita_player_unlock(p);
     return level;
 }
@@ -974,7 +1319,6 @@ javacall_result javacall_media_set_mute(javacall_handle handle, javacall_bool mu
     }
     vita_player_lock(p);
     p->muted = (mute == JAVACALL_TRUE) ? 1 : 0;
-    vita_player_apply_volume(p);
     vita_player_unlock(p);
     return JAVACALL_OK;
 }
@@ -1105,74 +1449,56 @@ javacall_result javacall_media_get_video_snapshot_data(javacall_handle handle, /
  * @retval JAVACALL_FAIL    Fail
  */
 javacall_result javacall_media_play_tone(long note, long duration, long volume) {
-    /* Tono Manager síncrono: seno a 48kHz por el puerto MAIN.
-     * Bloquea al llamador (normalmente el hilo de tonos de Java). */
-    double freq = vita_note_freq(note);
+    /* Sesión 55: antes era SÍNCRONO y se llama desde KNI en el hilo de
+     * la VM -> el juego entero se congelaba lo que durase el tono (hasta
+     * 5 s). Ahora es una voz más del mezclador y vuelve al instante,
+     * como pide MIDP (Manager.playTone no bloquea). */
+    vita_player_t *t;
     if (duration <= 0) {
         return JAVACALL_FAIL;
     }
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
     if (duration > 5000) duration = 5000; /* seguridad */
-
-    int port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN,
-                                   VITA_AUDIO_GRAIN, VITA_AUDIO_FREQ,
-                                   SCE_AUDIO_OUT_MODE_STEREO);
-    if (port < 0) {
-        port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM,
-                                   VITA_AUDIO_GRAIN, VITA_AUDIO_FREQ,
-                                   SCE_AUDIO_OUT_MODE_STEREO);
-    }
-    if (port < 0) {
+    if (vita_mix_start() != 0) {
         return JAVACALL_FAIL;
     }
-    int v = (int)(volume * SCE_AUDIO_OUT_MAX_VOL) / 100;
-    int vol[2] = { v, v };
-    sceAudioOutSetVolume(port,
-        SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vol);
-
-    static short grain[VITA_AUDIO_GRAIN * 2];
-    long total = (long)(VITA_AUDIO_FREQ * duration / 1000);
-    long done = 0;
-    double phase = 0.0;
-    double step = 2.0 * 3.141592653589793 * freq / VITA_AUDIO_FREQ;
-    vita_tone_abort = 0;
-    while (done < total && !vita_tone_abort) {
-        long chunk = total - done;
-        if (chunk > VITA_AUDIO_GRAIN) chunk = VITA_AUDIO_GRAIN;
-        long i;
-        for (i = 0; i < chunk; i++) {
-            /* Envolvente: ataque/salida de 5ms para evitar clicks. */
-            long left = total - done - i;
-            double env = 1.0;
-            long ramp = VITA_AUDIO_FREQ * 5 / 1000;
-            if (done + i < ramp) env = (double)(done + i) / ramp;
-            else if (left < ramp) env = (double)left / ramp;
-            short s = (short)(sin(phase) * 30000.0 * env);
-            phase += step;
-            if (phase > 2.0 * 3.141592653589793) phase -= 2.0 * 3.141592653589793;
-            grain[i * 2] = s;
-            grain[i * 2 + 1] = s;
-        }
-        if (chunk < VITA_AUDIO_GRAIN) {
-            memset(grain + chunk * 2, 0,
-                   (size_t)(VITA_AUDIO_GRAIN - chunk) * 2 * sizeof(short));
-        }
-        sceAudioOutOutput(port, grain);
-        done += chunk;
+    t = (vita_player_t *)calloc(1, sizeof(vita_player_t));
+    if (!t) {
+        return JAVACALL_FAIL;
     }
-    sceAudioOutReleasePort(port);
+    t->kind = VITA_PLAYER_TONE;
+    t->volume = (int)volume;
+    t->rate = VITA_AUDIO_FREQ;
+    t->toneStep = 2.0 * 3.141592653589793 * vita_note_freq(note) / VITA_AUDIO_FREQ;
+    t->toneTotal = (long)VITA_AUDIO_FREQ * duration / 1000;
+    vita_stage_reset(t);
+    vita_lock();
+    if (vita_mix_add(t) != 0) {
+        vita_unlock();
+        free(t);
+        return JAVACALL_FAIL;
+    }
+    t->state = 1;  /* el mezclador lo libera al terminar */
+    vita_unlock();
     return JAVACALL_OK;
 }
 
 /**
  * stop simple tone
- * 
+ *
  * @retval JAVACALL_OK      Success
  * @retval JAVACALL_FAIL    Fail
  */
 javacall_result javacall_media_stop_tone(void) {
-    vita_tone_abort = 1;
+    int i;
+    vita_lock();
+    for (i = 0; i < VITA_MIX_MAX; i++) {
+        if (vita_mix_list[i] && vita_mix_list[i]->kind == VITA_PLAYER_TONE) {
+            vita_mix_list[i]->state = 0;  /* el mezclador lo quita */
+        }
+    }
+    vita_unlock();
     return JAVACALL_OK;
 }
 

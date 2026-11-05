@@ -856,11 +856,17 @@ void vita_jvmlog_flush(void);
 extern void (*vita_lcd_menu_hook)(void);
 extern void (*vita_exit_hook)(void);
 
+void vita_gpu_lock(void);
+
 static void relaunch(const char *a1, const char *a2) {
     char *args[3] = { (char *)a1, (char *)a2, NULL };
     log_line("relanzando app0:eboot.bin %s %s", a1 ? a1 : "",
              a2 ? a2 : "");
     vita_jvmlog_flush();
+    /* Sesión 55: L+R+X llega desde el hilo de teclas y podía relanzar
+     * con la VM a mitad de un frame. Con el cerrojo de la GPU tomado
+     * (y nunca soltado) nadie más dibuja hasta que el proceso muere. */
+    vita_gpu_lock();
     sceAppMgrLoadExec("app0:eboot.bin", a1 ? args : NULL, NULL);
     sceKernelExitProcess(0);
 }
