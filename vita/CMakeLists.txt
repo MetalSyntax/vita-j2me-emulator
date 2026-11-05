@@ -23,7 +23,7 @@ set(VITA_APP_NAME "VitaJ2ME")
 # TITLEID de exactamente 9 caracteres (el instalador da 0xF0030000 si no).
 set(VITA_TITLEID "VITAJ2ME0")
 set(VITA_VPKNAME "vitaj2me-bringup")
-set(VITA_VERSION "01.00")
+set(VITA_VERSION "01.01")
 
 add_definitions(-D_GNU_SOURCE)
 
@@ -61,12 +61,12 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--pic-veneer")
 #   #28: pcsl_file_getpathseparator() devuelve ':' pero CLDC parte el
 #        classpath por ';' (OsFile_javacall.hpp): "<jar>:classes.zip" era
 #        UNA entrada -> "class not found: java/lang/Object" (HW 040).
-# VJ_VM=c (defecto): VM con interprete C, _prebuilt/lib.
-# VJ_VM=asm: interprete ARM generado por loopgen + ROMIZING=true,
+# VJ_VM=asm (defecto desde v1.0.1): interprete ARM generado por loopgen + ROMIZING=true,
 #   _prebuilt/lib-asm (ver build-vita-cldc-asm.sh). Ahi el fix #15 esta
 #   compilado en TaskMirror.cpp: sin --wrap ni patch_vm_calls.py (que
 #   reescribe `bl` Thumb y en la VM ARM no encontraria los call sites).
-set(VJ_VM "c" CACHE STRING "VM CLDC: c | asm")
+# VJ_VM=c: VM con interprete C, _prebuilt/lib (la de la v1.0; respaldo).
+set(VJ_VM "asm" CACHE STRING "VM CLDC: c | asm")
 set(VITAJ2ME_VM_WRAPS
   pcsl_file_getpathseparator
   Java_java_lang_Thread_sleep
