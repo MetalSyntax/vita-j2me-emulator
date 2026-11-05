@@ -39,6 +39,10 @@
 #include "launcher.h"
 #include "gamecfg.h"
 
+/* prof.c (perfil de nativos, config/profile) */
+void vj_prof_init(void);
+void vj_prof_report(unsigned long long vm_us);
+
 /* Entrypoints de libmidp.a (jams_port/javacall + javacall_common). */
 void JavaTask(void);
 void javanotify_start_suite(char *suiteId);
@@ -164,6 +168,7 @@ static int hb_thread(SceSize args, void *argp) {
                 armed = 0;
             }
         }
+        vj_prof_report(clocks - last_clocks);
         last_flush = f;
         last_keys = k;
         last_clocks = clocks;
@@ -1162,6 +1167,7 @@ int main(int argc, char *argv[]) {
     }
     /* Watchdog de sesión (petición explícita: mejores logs): late
      * cada 10 s con FPS y teclas aunque la JVM esté atascada. */
+    vj_prof_init();
     start_watchdog();
     rom_data_init();
     /* Splash inmediato (bug #21): el bootstrap tarda segundos y el
