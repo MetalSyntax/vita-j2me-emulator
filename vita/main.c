@@ -754,11 +754,18 @@ static void vita_start_game(const vj_game *g, const vj_cfg *c, int gate) {
         vita_arg_D_config,
         vita_arg_D_encoding,
         flags,
+#ifndef VJ_VM_ASM
         vita_arg_classpathext,
         vita_arg_classes,
+#endif
         suite,
         cls,
     };
+    /* VM asm (sesión 57): CLDC+MIDP van romizados; con classes.zip
+     * también en el classpath del juego cada clase del sistema existía
+     * dos veces (ROM y fichero). Crash HW 100 (Asphalt Nitro, 2 s tras
+     * arrancar): getstatic leía un TaskMirror basura (0x1c) para una
+     * clase del heap. */
     snprintf(flags, sizeof(flags), "-Dvita.flags=%s%s-", c->touch ? "T" : "",
              gate ? "G" : "");
     snprintf(suite, sizeof(suite), "%d", g->suite_id);
@@ -797,8 +804,10 @@ static void boot_installer_mode(int count) {
     argv[n++] = vita_arg_D_profiles;
     argv[n++] = vita_arg_D_config;
     argv[n++] = vita_arg_D_encoding;
+#ifndef VJ_VM_ASM  /* VM asm: clases del sistema en la ROM (sesión 57) */
     argv[n++] = vita_arg_classpathext;
     argv[n++] = vita_arg_classes;
+#endif
     argv[n++] = vita_arg_internal;
     argv[n++] = installer;
     argv[n++] = op_batch;
