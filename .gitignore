@@ -7,6 +7,7 @@
 # Build del bringup (Fase 2a) — regenerable con
 # vita/BUILDING_VITA.txt / toolkit/vitaj2me-toolkit (opción "Compilar").
 /vita/build/
+/vita/build-asm/
 
 # Logs sueltos de debugging en consola real que a veces se bajan a mano
 # a la raíz del proyecto (el historial "de verdad" vive en toolkit/logs/,

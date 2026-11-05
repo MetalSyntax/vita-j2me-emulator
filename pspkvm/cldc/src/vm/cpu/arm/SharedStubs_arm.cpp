@@ -555,7 +555,15 @@ bind(return_address);
   cmp(r3, zero);
 
   eol_comment("invoke the pending activations");
-  bl("shared_entry", ne);
+  // VitaJ2ME: sin `bl` condicional hacia un simbolo (R_ARM_JUMP24): el
+  // loader de la Vita lo reubica como `b` sin LR (ver InterpreterStubs_arm,
+  // fix de J2Vita 69ef8c9c). b<cond> local + bl incondicional.
+  {
+    Label no_pending;
+    b(no_pending, eq);
+    bl("shared_entry");
+    bind(no_pending);
+  }
 
   if (return_value_type == T_OBJECT) {
     eol_comment("move oop return value to r0");

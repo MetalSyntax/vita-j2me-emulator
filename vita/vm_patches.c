@@ -62,6 +62,7 @@
  *     antes, asi que si el lookup encuentra algo el remove tambien.
  * ------------------------------------------------------------------ */
 
+#ifndef VJ_VM_ASM  /* VM asm: fix #15 compilado en TaskMirror.cpp */
 /* ReturnOop == OopDesc*; los dos son static member functions (sin this),
  * asi que desde C son punteros a funcion normales. */
 extern void *__real__ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop(void *containing_class);
@@ -93,9 +94,14 @@ void *__wrap__ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop(void *containing_cl
     return __real__ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop(containing_class);
 }
 
+#endif
 /* Para poder leerlo desde el log de cierre / un futuro dump. */
 int vitaj2me_clinit_skip_count(void) {
+#ifndef VJ_VM_ASM
     return vitaj2me_clinit_skips;
+#else
+    return 0;
+#endif
 }
 
 /* Bug real #28 (HW 040): MIDP arma el classpath de una suite como

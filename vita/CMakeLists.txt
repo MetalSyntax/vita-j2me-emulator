@@ -61,16 +61,27 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--pic-veneer")
 #   #28: pcsl_file_getpathseparator() devuelve ':' pero CLDC parte el
 #        classpath por ';' (OsFile_javacall.hpp): "<jar>:classes.zip" era
 #        UNA entrada -> "class not found: java/lang/Object" (HW 040).
+# VJ_VM=c (defecto): VM con interprete C, _prebuilt/lib.
+# VJ_VM=asm: interprete ARM generado por loopgen + ROMIZING=true,
+#   _prebuilt/lib-asm (ver build-vita-cldc-asm.sh). Ahi el fix #15 esta
+#   compilado en TaskMirror.cpp: sin --wrap ni patch_vm_calls.py (que
+#   reescribe `bl` Thumb y en la VM ARM no encontraria los call sites).
+set(VJ_VM "c" CACHE STRING "VM CLDC: c | asm")
 set(VITAJ2ME_VM_WRAPS
-  _ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop
   pcsl_file_getpathseparator
   Java_java_lang_Thread_sleep
 )
+if (NOT VJ_VM STREQUAL "asm")
+  list(APPEND VITAJ2ME_VM_WRAPS _ZN13JVMTaskMirror18clinit_list_removeEP6JVMOop)
+endif ()
 foreach(sym ${VITAJ2ME_VM_WRAPS})
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--wrap=${sym}")
 endforeach()
 
 add_executable(${PROJECT_NAME} main.c launcher.c gamecfg.c support.c vm_patches.c)
+if (VJ_VM STREQUAL "asm")
+  target_compile_definitions(${PROJECT_NAME} PRIVATE VJ_VM_ASM=1)
+endif ()
 
 # vm_patches.c va en Thumb (el resto del frontend es -marm): los call
 # sites que redirige patch_vm_calls.py son `bl` Thumb dentro de CLDC, y
@@ -87,10 +98,14 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # midp -> cldc_vm -> javacall -> pcsl (grupo por dependencias cruzadas).
 # m/z van al FINAL (con --as-needed el linker descarta lo que aún no se usa).
 set(VITAJ2ME_LIBS "${CMAKE_SOURCE_DIR}/../_prebuilt/lib")
+set(VITAJ2ME_VMLIBS "${VITAJ2ME_LIBS}")
+if (VJ_VM STREQUAL "asm")
+  set(VITAJ2ME_VMLIBS "${CMAKE_SOURCE_DIR}/../_prebuilt/lib-asm")
+endif ()
 target_link_libraries(${PROJECT_NAME}
   -Wl,--start-group
-  ${VITAJ2ME_LIBS}/libmidp.a
-  ${VITAJ2ME_LIBS}/libcldc_vm_r.a
+  ${VITAJ2ME_VMLIBS}/libmidp.a
+  ${VITAJ2ME_VMLIBS}/libcldc_vm_r.a
   ${VITAJ2ME_LIBS}/libjavacall.a
   stdc++
   ${VITAJ2ME_LIBS}/libpcsl_file.a
@@ -131,12 +146,14 @@ target_link_libraries(${PROJECT_NAME}
 # ejecuta sobre el ELF recien enlazado, ANTES de que vita_create_self lo
 # convierta a .velf/eboot.bin. El script verifica su propio trabajo y
 # devuelve error si no encuentra exactamente los call sites esperados.
+if (NOT VJ_VM STREQUAL "asm")
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E env "VITASDK=$ENV{VITASDK}"
           python3 "${CMAKE_SOURCE_DIR}/patch_vm_calls.py"
           "$<TARGET_FILE:${PROJECT_NAME}>"
   COMMENT "Parcheando llamadas internas de la JVM (vm_patches.c)"
   VERBATIM)
+endif ()
 
 vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)
 # NOTA: vita_create_vpk(FILE ...) no tolera espacios en rutas absolutas

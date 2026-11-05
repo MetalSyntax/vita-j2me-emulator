@@ -249,7 +249,16 @@ bind_global("start_lightweight_thread_asm");
   str(r2, imm_index(r0, Thread::pending_entries_offset()), ne);
   comment("} else {");
   comment("  invoke_pending_entries(THREAD)");
-  bl("invoke_pending_entries", eq);
+  // VitaJ2ME (de J2Vita, KiddRwxSsj/j2vita 69ef8c9c, GPLv2): nada de `bl`
+  // condicional hacia un simbolo: el loader de modulos de la Vita
+  // reubica un `bleq` como `beq` (sin LR) -> los Thread nuevos entraban
+  // en bucle. Se salta con un `b` condicional local + `bl` incondicional.
+  {
+    Label terminating;
+    b(terminating, ne);
+    bl("invoke_pending_entries");
+    bind(terminating);
+  }
   comment("}");
 
   comment("if (!TestCompiler) {");
@@ -262,8 +271,14 @@ bind_global("start_lightweight_thread_asm");
   comment("    call_on_primordial_stack(lightweight_thread_uncaught_exception);");
   comment("  }");
   cmp(r1, zero);
-  ldr(r0, imm_index(jsp, -1 * SignedBytesPerWord), ne);
-  bl("call_on_primordial_stack",                   ne); 
+  // VitaJ2ME: mismo problema que arriba (bl condicional reubicado).
+  {
+    Label no_uncaught;
+    b(no_uncaught, eq);
+    ldr(r0, imm_index(jsp, -1 * SignedBytesPerWord));
+    bl("call_on_primordial_stack");
+    bind(no_uncaught);
+  }
 
   comment("  call_on_primordial_stack(finish);");
   ldr(r0, imm_index(jsp, -2 * SignedBytesPerWord));

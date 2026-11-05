@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """deploy.py — versión NO interactiva del toolkit (para scripts e IA).
 
-  python3 toolkit/deploy.py eboot             sube vita/build/eboot.bin
+  python3 toolkit/deploy.py eboot [build-dir] sube <build-dir>/eboot.bin
+                                              (def. vita/build; VM ARM: vita/build-asm)
   python3 toolkit/deploy.py classes [tag]     classes.zip -> consola; la
                                               actual queda classes.zip.bak-<tag>
   python3 toolkit/deploy.py jars <dir>        sube los .jar/.jad nuevos a games/
@@ -63,7 +64,8 @@ def main(args):
     ftp = connect()
     try:
         if cmd == "eboot":
-            put(ftp, ROOT / "vita/build/eboot.bin", APP + "eboot.bin")
+            bdir = args[1] if len(args) > 1 else "vita/build"
+            put(ftp, ROOT / bdir / "eboot.bin", APP + "eboot.bin")
         elif cmd == "classes":
             tag = args[1] if len(args) > 1 else time.strftime("%Y%m%d-%H%M")
             if "classes.zip.bak-" + tag not in names(ftp, HOME):
