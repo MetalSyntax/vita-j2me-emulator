@@ -1198,7 +1198,8 @@ static void row_text(const vj_cfg *c, int r, char *label, char *val, int cap) {
         if (!VJ_IS_STICK(b) && c->tap[b][0] >= 0)
             snprintf(val, cap, "%s (%d, %d)", L("Touch", "Toque", "Toque"),
                      c->tap[b][0], c->tap[b][1]);
-        else if (VJ_IS_STICK(b) && c->joy[2] > 0)
+        else if ((VJ_IS_STICK(b) && c->joy[2] > 0) ||
+                 (VJ_IS_DPAD(b) && c->joy_dpad && c->joy[2] > 0))
             snprintf(val, cap, "%s", L("Joystick", "Joystick", "Joystick"));
         else
             snprintf(val, cap, "%s", cfg_key_name(c->map[b]));
@@ -1298,6 +1299,11 @@ static void row_change(vj_cfg *c, int r, int d) {
         }
         if (VJ_IS_STICK(b) && c->joy[2] > 0) {
             memset(c->joy, 0, sizeof(c->joy));
+            c->joy_dpad = 0;
+            return;
+        }
+        if (VJ_IS_DPAD(b) && c->joy_dpad && c->joy[2] > 0) {
+            c->joy_dpad = 0;  /* la cruceta vuelve a mandar sus teclas */
             return;
         }
         for (i = 0; i < vj_keys_n; i++)
@@ -1523,7 +1529,8 @@ static void draw_tap_editor(const vj_cfg *c, int sel, float cx, float cy,
     thick_line(cx, cy + 5, cx, cy + 16, 3, C_WHITE);
 
     /* barra superior: qué se está colocando */
-    vita2d_draw_rectangle(0, 0, SCR_W, 70, C_BAR);
+    vita2d_draw_rectangle(0, 0, SCR_W,
+                          sel == TAP_JOY && c->joy[2] > 0 ? 98 : 70, C_BAR);
     text(24, 30, 0.95f, C_WHITE, L("Touch buttons", "Botones táctiles",
                                    "Botões de toque"));
     glyph_pill(24, 52, "<");
@@ -1542,6 +1549,15 @@ static void draw_tap_editor(const vj_cfg *c, int sel, float cx, float cy,
                    "Marcadores no jogo"), c->tap_hud ? L("On", "Sí", "Sim")
                                                      : L("Off", "No", "Não"));
         text(SCR_W - 24 - text_w(0.8f, buf), 58, 0.8f, C_TEXT_2, buf);
+        if (sel == TAP_JOY && c->joy[2] > 0) {
+            snprintf(buf, sizeof(buf), "%s: %s",
+                     L("D-pad too", "También la cruceta",
+                       "Também o direcional"),
+                     c->joy_dpad ? L("On", "Sí", "Sim")
+                                 : L("Off", "No", "Não"));
+            text(SCR_W - 24 - text_w(0.8f, buf), 86, 0.8f,
+                 c->joy_dpad ? C_GLOW : C_TEXT_2, buf);
+        }
     }
 
     /* barra inferior */
@@ -1553,6 +1569,9 @@ static void draw_tap_editor(const vj_cfg *c, int sel, float cx, float cy,
     x0 += hint(x0, 522, 'x', NULL, L("Place", "Colocar", "Posicionar")) + 20;
     if (sel == TAP_JOY)
         x0 += hint(x0, 522, 0, "^ v", L("Size", "Tamaño", "Tamanho")) + 20;
+    if (sel == TAP_JOY && c->joy[2] > 0)
+        x0 += hint(x0, 522, 0, "SELECT", L("D-pad", "Cruceta",
+                                           "Direcional")) + 20;
     x0 += hint(x0, 522, 's', NULL, L("Clear", "Quitar", "Remover")) + 20;
     x0 += hint(x0, 522, 't', NULL, L("Markers", "Marcadores",
                                      "Marcadores")) + 20;
@@ -1594,6 +1613,7 @@ static void tap_editor(scene *sc, vj_cfg *c) {
             int step = (gw < gh ? gw : gh) / 40 + 1;
             if (down & SCE_CTRL_UP) c->joy[2] += step;
             if ((down & SCE_CTRL_DOWN) && c->joy[2] > step) c->joy[2] -= step;
+            if (down & SCE_CTRL_SELECT) c->joy_dpad = !c->joy_dpad;
         }
         /* stick: cursor (con aceleración suave) */
         {
@@ -1634,7 +1654,10 @@ static void tap_editor(scene *sc, vj_cfg *c) {
         }
         if (down & SCE_CTRL_SQUARE) {
             if (sel != TAP_JOY) c->tap[sel][0] = c->tap[sel][1] = -1;
-            else memset(c->joy, 0, sizeof(c->joy));
+            else {
+                memset(c->joy, 0, sizeof(c->joy));
+                c->joy_dpad = 0;
+            }
         }
         if (down & SCE_CTRL_TRIANGLE) c->tap_hud = !c->tap_hud;
         if (down & SCE_CTRL_CIRCLE) break;

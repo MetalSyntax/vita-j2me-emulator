@@ -169,6 +169,7 @@ void cfg_global_load(void) {
     /* los toques dependen de los botones que dibuja cada juego */
     memset(global_def.tap, 0xFF, sizeof(global_def.tap));
     memset(global_def.joy, 0, sizeof(global_def.joy));
+    global_def.joy_dpad = 0;
     global_loaded = 1;
 }
 
@@ -321,6 +322,8 @@ static void cfg_parse(const char *path, vj_cfg *c) {
                 memset(c->joy, 0, sizeof(c->joy));
         } else if (!strcmp(line, "taphud")) {
             c->tap_hud = atoi(v) ? 1 : 0;
+        } else if (!strcmp(line, "joydpad")) {
+            c->joy_dpad = atoi(v) ? 1 : 0;
         } else if (!strcmp(line, "map")) {
             char *p = v;
             for (i = 0; i < VJ_BTN_N && *p; i++) {
@@ -360,8 +363,8 @@ static void cfg_write(FILE *f, const vj_cfg *c) {
     fprintf(f, "\ntap=");
     for (i = 0; i < VJ_BTN_N; i++)
         fprintf(f, i ? ";%d,%d" : "%d,%d", c->tap[i][0], c->tap[i][1]);
-    fprintf(f, "\njoy=%d,%d,%d\ntaphud=%d\n", c->joy[0], c->joy[1],
-            c->joy[2], c->tap_hud);
+    fprintf(f, "\njoy=%d,%d,%d\ntaphud=%d\njoydpad=%d\n", c->joy[0],
+            c->joy[1], c->joy[2], c->tap_hud, c->joy_dpad);
 }
 
 void cfg_screen(const vj_cfg *c, int *w, int *h) {
@@ -593,11 +596,61 @@ static void draw_fps(void) {
 
 static void tap_hud(void);
 
+/* A5 (idea de J2Vita): al entrar al juego (y al cerrar el menú) se ve 5 s
+ * qué tecla del teléfono manda cada botón. Va con "Marcadores en juego".
+ * El reloj arranca en el primer frame que se presenta, no en cfg_apply
+ * (la precarga aplica la config mucho antes de que se vea el juego). */
+#define LEGEND_US 5000000ull
+static volatile int legend_pending;
+static SceUInt64 legend_until;
+
+static void key_legend(void) {
+    const char *vals[VJ_BTN_N];
+    int i, n = 0, rows[VJ_BTN_N];
+    float y, w = 0, a;
+    SceUInt64 now = sceKernelGetProcessTimeWide();
+    if (legend_pending) {
+        legend_pending = 0;
+        legend_until = now + LEGEND_US;
+    }
+    if (now >= legend_until || !pad_font) return;
+    for (i = 0; i < VJ_BTN_N; i++) {
+        const char *v;
+        if (VJ_IS_STICK(i)) continue;
+        if (cur_cfg.tap[i][0] >= 0)
+            v = L("Touch", "Toque", "Toque");
+        else if (VJ_IS_DPAD(i) && cur_cfg.joy_dpad && cur_cfg.joy[2] > 0)
+            v = L("Joystick", "Joystick", "Joystick");
+        else if (cur_cfg.map[i])
+            v = cfg_key_name(cur_cfg.map[i]);
+        else
+            continue;
+        a = vita2d_pgf_text_width(pad_font, 0.8f, v);
+        if (a > w) w = a;
+        vals[n] = v;
+        rows[n++] = i;
+    }
+    if (!n) return;
+    /* último segundo: se desvanece */
+    a = (legend_until - now) < 1000000ull
+            ? (float)(legend_until - now) / 1000000.0f : 1.0f;
+    y = 544 - 12 - n * 24;
+    vita2d_draw_rectangle(8, y - 6, 44 + w + 12, n * 24 + 10,
+                          RGBA8(0x00, 0x00, 0x00, (int)(0xA8 * a)));
+    for (i = 0; i < n; i++) {
+        if (a >= 0.5f) vj_button_glyph(rows[i], 28, y + i * 24 + 6, 7);
+        vita2d_pgf_draw_text(pad_font, 46, (int)(y + i * 24 + 13),
+                             RGBA8(0xE6, 0xEE, 0xFF, (int)(0xFF * a)), 0.8f,
+                             vals[i]);
+    }
+}
+
 /* Hilo de la VM, dentro del frame de lcd.c. */
 static void pad_overlay(void) {
     int i;
     if (vj_show_fps && pad_font) draw_fps();
     if (cur_cfg.tap_hud && (cur_taps || cur_cfg.joy[2] > 0)) tap_hud();
+    if (cur_cfg.tap_hud) key_legend();
     for (i = 0; i < 2; i++)
         if (cur.panel[i][2] > 0)
             vita2d_draw_rectangle(cur.panel[i][0], cur.panel[i][1],
@@ -764,16 +817,36 @@ static void ptr_update(void) {
 
 /* Stick -> punto del joystick, girando la dirección vista en la Vita a la
  * del juego (como game_key). Devuelve 0 en la zona muerta. */
+static void joy_vec_point(float du, float dv, int *x, int *y);
+
 static int joy_point(int lx, int ly, int *x, int *y) {
-    float du = (lx - 128) / 127.0f, dv = (ly - 128) / 127.0f, gx, gy;
+    float du = (lx - 128) / 127.0f, dv = (ly - 128) / 127.0f;
     float len = sqrtf(du * du + dv * dv), dead = 0.25f, m;
-    int gw = javacall_lcd_get_screen_width();
-    int gh = javacall_lcd_get_screen_height();
     if (len < dead) return 0;
     /* fuera de la zona muerta: 0..1 del radio, en la misma dirección */
     m = ((len > 1.0f ? 1.0f : len) - dead) / (1.0f - dead);
-    du = du / len * m;
-    dv = dv / len * m;
+    joy_vec_point(du / len * m, dv / len * m, x, y);
+    return 1;
+}
+
+/* A3: cruceta -> joystick, 8 direcciones al radio completo. */
+static int joy_dpad_point(unsigned int b, int *x, int *y) {
+    float du = 0, dv = 0, len;
+    if (b & SCE_CTRL_LEFT) du -= 1;
+    if (b & SCE_CTRL_RIGHT) du += 1;
+    if (b & SCE_CTRL_UP) dv -= 1;
+    if (b & SCE_CTRL_DOWN) dv += 1;
+    if (du == 0 && dv == 0) return 0;
+    len = sqrtf(du * du + dv * dv);
+    joy_vec_point(du / len, dv / len, x, y);
+    return 1;
+}
+
+/* Dirección vista en la Vita (du, dv en -1..1) -> punto del juego. */
+static void joy_vec_point(float du, float dv, int *x, int *y) {
+    float gx, gy;
+    int gw = javacall_lcd_get_screen_width();
+    int gh = javacall_lcd_get_screen_height();
     if (cur_cfg.mirror & 1) du = -du;
     if (cur_cfg.mirror & 2) dv = -dv;
     switch (cur_cfg.rotate) {
@@ -788,7 +861,6 @@ static int joy_point(int lx, int ly, int *x, int *y) {
     if (*x >= gw) *x = gw - 1;
     if (*y < 0) *y = 0;
     if (*y >= gh) *y = gh - 1;
-    return 1;
 }
 
 static int touch_thread(SceSize args, void *argp) {
@@ -916,9 +988,11 @@ static int touch_thread(SceSize args, void *argp) {
                 ptr.x[SRC_BTN0 + i] = cur_cfg.tap[i][0];
                 ptr.y[SRC_BTN0 + i] = cur_cfg.tap[i][1];
             }
+            /* el stick manda; si está suelto, la cruceta (si se pidió) */
             ptr.on[SRC_JOY] = cur_cfg.joy[2] > 0 &&
-                              joy_point(pad.lx, pad.ly, &ptr.x[SRC_JOY],
-                                        &ptr.y[SRC_JOY]);
+                (joy_point(pad.lx, pad.ly, &ptr.x[SRC_JOY], &ptr.y[SRC_JOY]) ||
+                 (cur_cfg.joy_dpad &&
+                  joy_dpad_point(b, &ptr.x[SRC_JOY], &ptr.y[SRC_JOY])));
         }
         ptr_update();
     }
@@ -965,6 +1039,7 @@ void cfg_apply(const vj_cfg *c, int live) {
          * con el joystick activo, las direcciones del stick tampoco */
         if (!btn_mask[i]) continue;  /* panel trasero: vj_touch */
         if (!VJ_IS_STICK(i) ? c->tap[i][0] >= 0 : c->joy[2] > 0) continue;
+        if (VJ_IS_DPAD(i) && c->joy_dpad && c->joy[2] > 0) continue;
         vita_keymap_custom[n].nativeKey = btn_mask[i];
         vita_keymap_custom[n].javaKey =
             (javacall_key)game_key(c->map[i], c->rotate, c->mirror);
@@ -982,7 +1057,8 @@ void cfg_apply(const vj_cfg *c, int live) {
     vita_keymap_custom_n = n;
 
     {
-        int hud = c->tap_hud && (cur_taps || c->joy[2] > 0);
+        int hud = c->tap_hud;  /* marcadores y/o leyenda (A5) */
+        legend_pending = c->tap_hud;
         if ((cur.nkeys || vj_show_fps || hud) && !pad_font)
             pad_font = vita2d_load_default_pgf();
         vita_lcd_overlay_hook = (cur.nkeys || vj_show_fps || hud)

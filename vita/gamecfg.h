@@ -14,6 +14,7 @@ enum { VJ_PAD_AUTO = 0, VJ_PAD_OFF, VJ_PAD_LEFT, VJ_PAD_RIGHT, VJ_PAD_BOTH };
  * (16, 17). El orden es el del .cfg (map=, tap=): solo se añade al final. */
 #define VJ_BTN_N 18
 #define VJ_IS_STICK(i) ((i) >= 12 && (i) < 16)
+#define VJ_IS_DPAD(i) ((i) >= 0 && (i) < 4)
 #define VJ_REAR0 16
 
 typedef struct {
@@ -33,7 +34,10 @@ typedef struct {
     int tap[VJ_BTN_N][2];
     int joy[3];         /* stick izq. = dedo en un joystick dibujado por el
                            juego: centro x, y y radio (r <= 0: apagado) */
-    int tap_hud;        /* 1 = marcadores de los toques encima del juego */
+    int tap_hud;        /* 1 = marcadores de los toques encima del juego y
+                           leyenda de botones 5 s al entrar al juego */
+    int joy_dpad;       /* 1 = la cruceta también mueve el joystick
+                           (8 direcciones, radio completo) */
 } vj_cfg;
 
 typedef struct {

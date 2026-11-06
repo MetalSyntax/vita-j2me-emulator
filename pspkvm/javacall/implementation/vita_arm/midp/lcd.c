@@ -199,25 +199,52 @@ static unsigned short int __attribute__((aligned(16))) _rotbuf[VSCR_MAX*VSCR_MAX
 int vita_lcd_rotate = 0;
 int vita_lcd_mirror = 0;
 
+/* Índice en scbuff del píxel destino (u, v) para la orientación pedida. */
+static int vita_src_index(int rot, int mirror, int W, int H, int dw, int dh,
+                          int u, int v) {
+    int uu = (mirror & 1) ? dw - 1 - u : u;
+    int vv = (mirror & 2) ? dh - 1 - v : v;
+    int x, y;
+    switch (rot) {
+    case 1: x = vv; y = H - 1 - uu; break;
+    case 2: x = W - 1 - uu; y = H - 1 - vv; break;
+    case 3: x = W - 1 - vv; y = uu; break;
+    default: x = uu; y = vv; break;
+    }
+    return y * W + x;
+}
+
 /* scbuff (W x H) -> _rotbuf (dw x dh, pitch VSCR_MAX) con la orientación
- * pedida. Recorre el destino y calcula el origen de cada píxel. */
+ * pedida.
+ * Sesión 62 (Gangstar Rio 480x800 girado, bringup-118): la versión
+ * anterior recorría el destino píxel a píxel con un switch y leía el
+ * origen por COLUMNAS (salto de W*2 bytes): un fallo de caché por píxel.
+ * refresh0 costaba ~40 ms por frame (2528 ms / 63) frente a ~2 ms sin
+ * giro (bringup-116). Ahora: la transformación es afín, así que el
+ * origen avanza un paso constante por píxel (step_u) y por fila
+ * (step_v); se recorre en bloques de 32x32 para que las 32 filas de
+ * origen que toca un bloque quepan en la caché L1. */
+#define VT_TILE 32
 static void vita_transform(int rot, int mirror, int *out_w, int *out_h) {
     const unsigned short *src = (const unsigned short *)scbuff;
     int W = vscr_w, H = vscr_h;
     int dw = (rot & 1) ? H : W, dh = (rot & 1) ? W : H;
-    int u, v;
-    for (v = 0; v < dh; v++) {
-        unsigned short *row = _rotbuf + (unsigned int)v * VSCR_MAX;
-        int vv = (mirror & 2) ? dh - 1 - v : v;
-        for (u = 0; u < dw; u++) {
-            int uu = (mirror & 1) ? dw - 1 - u : u, x, y;
-            switch (rot) {
-            case 1: x = vv; y = H - 1 - uu; break;
-            case 2: x = W - 1 - uu; y = H - 1 - vv; break;
-            case 3: x = W - 1 - vv; y = uu; break;
-            default: x = uu; y = vv; break;
+    int base   = vita_src_index(rot, mirror, W, H, dw, dh, 0, 0);
+    int step_u = vita_src_index(rot, mirror, W, H, dw, dh, 1, 0) - base;
+    int step_v = vita_src_index(rot, mirror, W, H, dw, dh, 0, 1) - base;
+    int tu, tv, u, v;
+    for (tv = 0; tv < dh; tv += VT_TILE) {
+        int vend = tv + VT_TILE < dh ? tv + VT_TILE : dh;
+        for (tu = 0; tu < dw; tu += VT_TILE) {
+            int n0 = (tu + VT_TILE < dw ? tu + VT_TILE : dw) - tu;
+            for (v = tv; v < vend; v++) {
+                unsigned short *row = _rotbuf + (unsigned int)v * VSCR_MAX + tu;
+                const unsigned short *s = src + base + v * step_v + tu * step_u;
+                for (u = 0; u < n0; u++) {
+                    row[u] = *s;
+                    s += step_u;
+                }
             }
-            row[u] = src[y * W + x];
         }
     }
     *out_w = dw;
